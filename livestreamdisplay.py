@@ -1,13 +1,16 @@
 import numpy as np
 import cv2 as cv
+import time
 
-cap = cv.VideoCapture("https://58cc2dce193dd.streamlock.net/live/Westlake_N_Dexter_NS.stream/playlist.m3u8")
+cap = cv.VideoCapture("https://58cc2dce193dd.streamlock.net/live/23_E_Madison_EW.stream/chunklist_w233633407.m3u8")
 
 while True:
     ret, img = cap.read()
 
     if not ret:
-        break
+        time.sleep(0.01)
+        print('.')
+        continue
 
     cv.imshow('img', img)
     if cv.waitKey(1) & 0xFF == ord('q'):
