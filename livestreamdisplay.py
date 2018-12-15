@@ -5,22 +5,12 @@ import subprocess as sp
 import json
 from threading import Thread
 
-# cap = cv.VideoCapture("https://58cc2dce193dd.streamlock.net/live/23_E_Madison_EW.stream/chunklist_w233633407.m3u8")
+"""
 
-# while True:
-#     ret, img = cap.read()
+https://58cc2dce193dd.streamlock.net/live/12_NE_50_EW.stream/chunklist_w403604642.m3u8
+https://58cc2dce193dd.streamlock.net/live/Broadway_E_Pike_EW.stream/chunklist_w880989541.m3u8
 
-#     if not ret:
-#         time.sleep(0.01)
-#         print('.')
-#         continue
-
-#     cv.imshow('img', img)
-#     if cv.waitKey(1) & 0xFF == ord('q'):
-#         break
-
-# cap.release()
-# cv.destroyAllWindows()
+"""
 
 class HLSVideoStream:
     def __init__(self, src):
@@ -100,7 +90,7 @@ class HLSVideoStream:
         self.stopped = True
 
 def main():
-    stream = HLSVideoStream(src="https://58cc2dce193dd.streamlock.net/live/Boren_Seneca_NS.stream/chunklist_w1390393416.m3u8").start()
+    stream = HLSVideoStream(src="https://58cc2dce193dd.streamlock.net/live/1_Seneca_EW.stream/playlist.m3u8").start()
     print('hi')
 
     while True:
