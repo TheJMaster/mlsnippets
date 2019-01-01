@@ -8,6 +8,11 @@ name = "pypi"
 [packages]
 opencv-python = "*"
 numpy = "*"
+scipy = "*"
+sacred = "*"
+matplotlib = "*"
+pillow = "*"
+nvidia-ml-py = "*"
 
 [requires]
 python_version = "3.5.2"

@@ -1,9 +1,11 @@
 import numpy
 import cv2
+import random
 import time
 import subprocess as sp
 import json
 from threading import Thread
+from streamurlgenerator import get_camera_urls
 
 """
 
@@ -90,13 +92,20 @@ class HLSVideoStream:
         self.stopped = True
 
 def main():
-    stream = HLSVideoStream(src="https://58cc2dce193dd.streamlock.net/live/1_Seneca_EW.stream/playlist.m3u8").start()
+    urls = get_camera_urls()
+    # stream = HLSVideoStream(src="https://58cc2dce193dd.streamlock.net/live/1_Seneca_EW.stream/playlist.m3u8").start()
+    # stream = HLSVideoStream(src="https://58cc2dce193dd.streamlock.net/live/12_S_Boren_NS.stream/playlist.m3u8").start()
+    print(random.choice(urls))
+    stream = HLSVideoStream(src=random.choice(urls)).start()
+
     print('hi')
 
     while True:
         frame = stream.read()
         output_rgb = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         cv2.imshow('Video', output_rgb)
+
+        # time.sleep(0.3)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
