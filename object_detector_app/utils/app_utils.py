@@ -9,6 +9,7 @@ import subprocess as sp
 import json 
 import numpy
 import time
+from queue import Queue
 from threading import Thread
 from matplotlib import colors
 
@@ -54,6 +55,8 @@ class HLSVideoStream:
 		# be stopped
 		self.stopped = False
 
+		self.frame_q = Queue()
+
 		FFMPEG_BIN = "ffmpeg"
 
 		metadata = {}
@@ -76,8 +79,8 @@ class HLSVideoStream:
 
 		print('SUCCESS: Retrieved stream metadata.')
 
-		self.WIDTH = metadata["streams"][0]["width"]
-		self.HEIGHT = metadata["streams"][0]["height"]
+		self.WIDTH = metadata["streams"][1]["width"]
+		self.HEIGHT = metadata["streams"][1]["height"]
 
 		self.pipe = sp.Popen([ FFMPEG_BIN, "-i", src,
 				 "-loglevel", "quiet", # no text output
@@ -87,9 +90,11 @@ class HLSVideoStream:
 				 "-vcodec", "rawvideo", "-"],
 				 stdin = sp.PIPE, stdout = sp.PIPE)
 		print('WIDTH: ', self.WIDTH)
+		print('HEIGHT: ', self.HEIGHT)
 
 		raw_image = self.pipe.stdout.read(self.WIDTH*self.HEIGHT*3) # read 432*240*3 bytes (= 1 frame)
 		self.frame =  numpy.fromstring(raw_image, dtype='uint8').reshape((self.HEIGHT,self.WIDTH,3))
+		self.frame_q.put(self.frame)
 		self.grabbed = self.frame is not None
 
 
@@ -105,14 +110,14 @@ class HLSVideoStream:
 		while True:
 			if self.stopped:
 				return
-
 			raw_image = self.pipe.stdout.read(self.WIDTH*self.HEIGHT*3) # read 432*240*3 bytes (= 1 frame)
 			self.frame =  numpy.fromstring(raw_image, dtype='uint8').reshape((self.HEIGHT,self.WIDTH,3))
+			self.frame_q.put(self.frame)
 			self.grabbed = self.frame is not None
 
 	def read(self):
 		# return the frame most recently read
-		return self.frame
+		return self.frame_q.get()
 
 	def stop(self):
 		# indicate that the thread should be stopped

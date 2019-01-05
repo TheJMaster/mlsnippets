@@ -57,7 +57,7 @@ def detect_objects(image_np, sess, detection_graph):
         category_index=category_index,
         min_score_thresh=.5
     )
-    return dict(rect_points=rect_points, class_names=class_names, class_colors=class_colors)
+    return dict(rect_points=rect_points, class_names=class_names, class_colors=class_colors, frame=image_np)
 
 
 def worker(input_q, output_q):
@@ -73,11 +73,19 @@ def worker(input_q, output_q):
         sess = tf.Session(graph=detection_graph)
 
     fps = FPS().start()
+
+    # i = -1
+
     while True:
+        # i += 1
         fps.update()
         frame = input_q.get()
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # if i % 10 == 0:
+            # data = detect_objects(frame_rgb, sess, detection_graph)
+            # i = 0
         output_q.put(detect_objects(frame_rgb, sess, detection_graph))
+        
 
     fps.stop()
     sess.close()
@@ -112,8 +120,17 @@ if __name__ == '__main__':
                                       height=args.height).start()
     fps = FPS().start()
 
+
+    args.width = video_capture.WIDTH
+    args.height = video_capture.HEIGHT
+
+    print("args width" + str(args.width))
+    print("args height" + str(args.height))
+
     while True:
+        
         frame = video_capture.read()
+        
         input_q.put(frame)
 
         t = time.time()
@@ -126,6 +143,7 @@ if __name__ == '__main__':
             rec_points = data['rect_points']
             class_names = data['class_names']
             class_colors = data['class_colors']
+            frame = data['frame']
             for point, name, color in zip(rec_points, class_names, class_colors):
                 cv2.rectangle(frame, (int(point['xmin'] * args.width), int(point['ymin'] * args.height)),
                               (int(point['xmax'] * args.width), int(point['ymax'] * args.height)), color, 3)
@@ -141,9 +159,11 @@ if __name__ == '__main__':
 
         fps.update()
 
-        print('[INFO] elapsed time: {:.2f}'.format(time.time() - t))
+        print('[INFO] change in time: {:.2f}'.format(time.time() - t))
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        time.sleep(0.02)
+
+        if cv2.waitKey(20) & 0xFF == ord('q'):
             break
 
     fps.stop()

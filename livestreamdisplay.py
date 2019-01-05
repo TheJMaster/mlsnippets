@@ -107,7 +107,7 @@ def main():
 
         # time.sleep(0.3)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        if cv2.waitKey(30) & 0xFF == ord('q'):
             break
 
 if __name__ == '__main__':
