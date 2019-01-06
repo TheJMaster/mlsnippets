@@ -6,7 +6,7 @@ import numpy as np
 import subprocess as sp
 import json
 import tensorflow as tf
-
+from utils.constants import IMAGE_SCALE_FACTOR
 from queue import Queue
 from threading import Thread
 from utils.app_utils import FPS, HLSVideoStream, WebcamVideoStream, draw_boxes_and_labels
@@ -90,6 +90,19 @@ def worker(input_q, output_q):
     fps.stop()
     sess.close()
 
+def boxes_are_similar(point1, point2):
+    for item in ('xmin', 'xmax', 'ymin', 'ymax'):
+        if abs(point1[item] - point2[item]) > 0.2:
+            return False
+    return True
+
+def add_found(point):
+    point['found'] = True
+    return point
+
+def set_all_not_found(points):
+    for point in points:
+        point['found'] = False
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -121,16 +134,18 @@ if __name__ == '__main__':
     fps = FPS().start()
 
 
-    args.width = video_capture.WIDTH
-    args.height = video_capture.HEIGHT
+    args.width = int(video_capture.WIDTH * IMAGE_SCALE_FACTOR)
+    args.height = int(video_capture.HEIGHT * IMAGE_SCALE_FACTOR)
 
     print("args width" + str(args.width))
     print("args height" + str(args.height))
 
+    last_bus_points = []
+
     while True:
-        
+
         frame = video_capture.read()
-        
+        print(str(frame.shape))
         input_q.put(frame)
 
         t = time.time()
@@ -140,6 +155,9 @@ if __name__ == '__main__':
         else:
             font = cv2.FONT_HERSHEY_SIMPLEX
             data = output_q.get()
+
+            set_all_not_found(last_bus_points)
+            
             rec_points = data['rect_points']
             class_names = data['class_names']
             class_colors = data['class_colors']
@@ -152,6 +170,23 @@ if __name__ == '__main__':
                                int(point['ymin'] * args.height) - 10), color, -1, cv2.LINE_AA)
                 cv2.putText(frame, name[0], (int(point['xmin'] * args.width), int(point['ymin'] * args.height)), font,
                             0.3, (0, 0, 0), 1)
+
+                if name[0].split(":")[0].lower() in ('bus', 'train'):
+                    similar_point_found = False
+                    for i, point2 in enumerate(last_bus_points):
+                        if boxes_are_similar(point, point2):
+                            last_bus_points[i] = add_found(point2)
+                            # print("modified point2: " + str(point2))
+                            similar_point_found = True
+                            break
+                    if not similar_point_found:
+                        last_bus_points.append(add_found(point))
+                        print("new bus detected, name: " + name[0])
+                        cv2.imshow('new bus', frame[(int(point['ymin'] * args.height)):(int(point['ymax'] * args.height)),
+                                                    (int(point['xmin'] * args.width)):(int(point['xmax'] * args.width))])
+                        print("point: " + str(point))
+   
+            last_bus_points = list(filter(lambda item: item['found'], last_bus_points))
             if args.stream_out:
                 print('Streaming elsewhere!')
             else:
@@ -159,9 +194,9 @@ if __name__ == '__main__':
 
         fps.update()
 
-        print('[INFO] change in time: {:.2f}'.format(time.time() - t))
+        # print('[INFO] change in time: {:.2f}'.format(time.time() - t))
 
-        time.sleep(0.02)
+        # time.sleep(0.02)
 
         if cv2.waitKey(20) & 0xFF == ord('q'):
             break
