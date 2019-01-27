@@ -95,8 +95,8 @@ class HLSVideoStream:
 
 		raw_image = self.pipe.stdout.read(self.WIDTH*self.HEIGHT*3) # read 432*240*3 bytes (= 1 frame)
 		self.frame =  numpy.fromstring(raw_image, dtype='uint8').reshape((self.HEIGHT,self.WIDTH,3))
-		self.frame = cv2.resize(self.frame, (int(self.WIDTH * IMAGE_SCALE_FACTOR), int(self.HEIGHT * IMAGE_SCALE_FACTOR)))
 		self.frame_q.put(self.frame)
+		# print('q length ' + str(self.frame_q.qsize()))
 		self.grabbed = self.frame is not None
 
 
@@ -114,8 +114,10 @@ class HLSVideoStream:
 				return
 			raw_image = self.pipe.stdout.read(self.WIDTH*self.HEIGHT*3) # read 432*240*3 bytes (= 1 frame)
 			self.frame =  numpy.fromstring(raw_image, dtype='uint8').reshape((self.HEIGHT,self.WIDTH,3))
-			self.frame = cv2.resize(self.frame, (int(self.WIDTH * IMAGE_SCALE_FACTOR), int(self.HEIGHT * IMAGE_SCALE_FACTOR)))
+			# self.frame = cv2.resize(self.frame, (int(self.WIDTH * IMAGE_SCALE_FACTOR), int(self.HEIGHT * IMAGE_SCALE_FACTOR)))
 			self.frame_q.put(self.frame)
+			# print('q length ' + str(self.frame_q.qsize()))
+
 			self.grabbed = self.frame is not None
 
 	def read(self):
