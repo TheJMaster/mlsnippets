@@ -209,7 +209,7 @@ if __name__ == '__main__':
                         bus_pixels = original_frame_returned[(int(point['ymin'] * video_capture.HEIGHT)):(int(point['ymax'] * video_capture.HEIGHT)),
                                                              (int(point['xmin'] * video_capture.WIDTH)):(int(point['xmax'] * video_capture.WIDTH))]
                         cv2.imshow('new bus', bus_pixels)
-                        cv2.imwrite('/home/millan/wsp/ml/buses/' + stream_name + str(time.time()) + '.png', bus_pixels)
+                        cv2.imwrite('/home/millan/wsp/buses/' + stream_name + str(time.time()) + '.png', bus_pixels)
                         saved_buses += 1
                         # print("point: " + str(point))
    
