@@ -1,0 +1,3 @@
+[submodule "object_detector_app/object_detector_app/re3-tensorflow"]
+	path = object_detector_app/object_detector_app/re3-tensorflow
+	url = git@gitlab.com:danielgordon10/re3-tensorflow.git
