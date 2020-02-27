@@ -9,7 +9,7 @@ import tensorflow as tf
 import random
 
 
-from utils.app_utils import FPS, WebcamVideoStream, HLSVideoStream
+from utils.app_utils import FPS, LocalVideoStream, HLSVideoStream
 from multiprocessing import Queue, Pool
 from object_detection.utils import label_map_util
 from object_detection.utils import visualization_utils as vis_util
@@ -71,7 +71,7 @@ def filter_boxes(tracked_boxes, detected_boxes):
 # Sess is used to detect new busses, tracker is used to track existing ones.
 def detect_objects(image_np, sess, detection_graph, tracker):
     global next_box_id, tracked_box_ids
-
+    
     # Expand dimensions since the model expects images to have shape: [1, None, None, 3]
     image_np_expanded = np.expand_dims(image_np, axis=0)
     image_tensor = detection_graph.get_tensor_by_name('image_tensor:0')
@@ -203,6 +203,8 @@ def worker(input_q, output_q):
     while True:
         fps.update()
         frame = input_q.get()
+        if np.shape(frame) == ():
+            continue
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         output_q.put(detect_objects(frame_rgb, sess, detection_graph, tracker))
 
@@ -219,12 +221,13 @@ if __name__ == '__main__':
                         default=480, help='Width of the frames in the video stream.')
     parser.add_argument('-ht', '--height', dest='height', type=int,
                         default=360, help='Height of the frames in the video stream.')
+    parser.add_argument('-p', '--path', dest="video_path", type=str, default=None)
 
     # TODO: Change back the default number of workers to 2.
     parser.add_argument('-num-w', '--num-workers', dest='num_workers', type=int,
                         default=1, help='Number of workers.')
     parser.add_argument('-q-size', '--queue-size', dest='queue_size', type=int,
-                        default=5, help='Size of the queue.')
+                        default=1, help='Size of the queue.')
     args = parser.parse_args()
 
     logger = multiprocessing.log_to_stderr()
@@ -238,9 +241,12 @@ if __name__ == '__main__':
     if (args.stream):
         print('Reading from hls stream.')
         video_capture = HLSVideoStream(src=args.stream).start()
+    elif (args.video_path):
+        print('Reading from local video.')
+        video_capture = LocalVideoStream(src=args.video_path, width=args.width, height=args.height).start() 
     else:
         print('Reading from webcam.')
-        video_capture = WebcamVideoStream(src=args.video_source,
+        video_capture = LocalVideoStream(src=args.video_source,
                                       width=args.width,
                                       height=args.height).start()
 

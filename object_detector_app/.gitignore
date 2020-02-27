@@ -90,3 +90,6 @@ ENV/
 
 # Custom
 .idea/
+
+# Output videos
+*.avi
