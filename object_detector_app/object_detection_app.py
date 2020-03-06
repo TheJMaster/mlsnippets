@@ -2,7 +2,7 @@
 """Bus detection and tracking application."""
 
 import argparse
-from multiprocessing import Queue, Pool, Process
+from multiprocessing import Queue, Process
 import os
 import random
 import sys
@@ -105,8 +105,8 @@ def detect_worker(input_queue, output_queue):
 
         # Run initial detection.
         (boxes, scores, classes, num_detections) = sess.run(
-                [boxes, scores, classes, num_detections],
-                feed_dict={image_tensor: image_np_expanded})
+            [boxes, scores, classes, num_detections],
+            feed_dict={image_tensor: image_np_expanded})
 
         # Flatten all results for filtering.
         boxes = np.squeeze(boxes)
@@ -131,8 +131,8 @@ def detect_worker(input_queue, output_queue):
         width = image_np.shape[1]
         detected_boxes = []
         for box in boxes:
-                if isinstance(box, np.ndarray):
-                    detected_boxes.append([box[1]*width, box[0]*height, box[3]*width, box[2]*height])
+            if isinstance(box, np.ndarray):
+                detected_boxes.append([box[1]*width, box[0]*height, box[3]*width, box[2]*height])
         detected_boxes = np.array(detected_boxes)
         log("detection found {} boxes".format(len(detected_boxes)))
         output_queue.put(detected_boxes)
@@ -160,7 +160,8 @@ def track_worker(input_queue, output_queue):
         output_queue.put(tracked_boxes)
 
 
-def find_objects(image_np, detect_input_queues, detect_output_queues, track_input_queue, track_output_queue):
+def find_objects(image_np, detect_input_queues, detect_output_queues, track_input_queue,
+                 track_output_queue):
     # pylint: disable-msg=too-many-locals
     """Run bus detection using on image, tracking existing buses using input/output queues."""
     global NEXT_BOX_ID  # pylint: disable-msg=global-statement
@@ -255,7 +256,9 @@ def draw_worker(input_q, output_q):
         if np.shape(frame) == ():
             continue
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        output_q.put(find_objects(frame_rgb, detect_worker_input_queues, detect_worker_output_queues, track_input_queue, track_output_queue))
+        output_q.put(find_objects(frame_rgb, detect_worker_input_queues,
+                                  detect_worker_output_queues, track_input_queue,
+                                  track_output_queue))
     fps.stop()
     track.join()
 
