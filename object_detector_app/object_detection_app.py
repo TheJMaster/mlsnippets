@@ -68,7 +68,6 @@ def validate_boxes(boxes):
     """Filters out invalid boxes."""
     valid_boxes = []
     for box in boxes:
-        print(box)
         valid = True
         x_dim = abs(box[2] - box[0])
         y_dim = abs(box[3] - box[1])
