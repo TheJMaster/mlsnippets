@@ -25,8 +25,11 @@ TRACKED_BOX_IDS = []
 UNDETECTED_COUNTS = []
 COLORS = []
 
-UNDETECTED_THRESHOLD = 10 # Number of frames to allow for undetected.
+UNDETECTED_THRESHOLD = 15 # Number of frames to allow for undetected.
 EQUALITY_THRESHOLD = 30 # How close we want the edges to be for two boxes to be considered the same.
+
+MIN_BOX_DIM = 10
+MAX_BOX_DIM = 100
 
 def log(info):
     """Log information to console."""
@@ -46,7 +49,7 @@ def contains_box(box, boxes):
     return False
 
 
-def filter_boxes(tracked_boxes, detected_boxes):
+def exclusive_boxes(tracked_boxes, detected_boxes):
     """Returns detected but untracked bounding boxes, undetected but tracked bounding boxes."""
     detected_untracked_boxes = []
     for box in detected_boxes:
@@ -59,6 +62,25 @@ def filter_boxes(tracked_boxes, detected_boxes):
             undetected_tracked_boxes.append(box)
 
     return (np.array(detected_untracked_boxes), np.array(undetected_tracked_boxes))
+
+
+def validate_boxes(boxes):
+    """Filters out invalid boxes."""
+    valid_boxes = []
+    for box in boxes:
+        print(box)
+        valid = True
+        x_dim = abs(box[2] - box[0])
+        y_dim = abs(box[3] - box[1])
+        # Ensure each dimension is at least the min dim
+        if x_dim < MIN_BOX_DIM or y_dim < MIN_BOX_DIM:
+            valid = False
+        # Ensure each dimension is at most the max dim
+        if x_dim > MAX_BOX_DIM or y_dim > MAX_BOX_DIM:
+            valid = False
+        if valid:
+            valid_boxes.append(box)
+    return valid_boxes
 
 
 def common_boxes(all_boxes):
@@ -139,6 +161,7 @@ def detect_worker(input_queue, output_queue):
 
     sess.close()
 
+
 def track_worker(input_queue, output_queue):
     """Runs Re3 tracker on images from input queue, passing bounding boxes to output queue."""
     sys.path.insert(1, '/home/jtjohn24/mlsnippets/object_detector_app/re3-tensorflow')
@@ -180,7 +203,9 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     log("tracker found {} boxes".format(len(tracked_boxes)))
 
     # Find any boxes that have been detected but not tracked, and vce versa.
-    detected_untracked_boxes, undetected_tracked_boxes = filter_boxes(tracked_boxes, detected_boxes)
+    detected_untracked_boxes, undetected_tracked_boxes = exclusive_boxes(tracked_boxes,
+                                                                         detected_boxes)
+
     log("{} boxes were detected but untracked".format(len(detected_untracked_boxes)))
     log("{} boxes were undetected but tracked".format(len(undetected_tracked_boxes)))
 
@@ -215,6 +240,10 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     track_input_queue.put((image_np, TRACKED_BOX_IDS, init_bounding_boxes))
     bounding_boxes = track_output_queue.get()
     log("{} bounding boxes found by final tracker".format(len(bounding_boxes)))
+
+    # Validate boxes before plotting.
+    detected_boxes = validate_boxes(detected_boxes)
+    bounding_boxes = validate_boxes(bounding_boxes)
 
     # Display detected boxes in gray.
     for detected_box in detected_boxes:
