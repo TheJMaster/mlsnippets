@@ -228,14 +228,8 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
                 args=(detect_input_queues, detect_output_queues, img, tag_for_img[img.tobytes()], output_queue)).start()
 
     detect_results = []
-    # TODO: Get rid of the hardcoded 3 here
     for _ in range(3 * len(detect_input_queues)):
         detect_results.append(output_queue.get())
-
-    # Run detect should just put everything in all of the input queues.
-    #   In each input queue add (image, tag)
-    # Call et from all the output queues until you have all images.
-    #   Group by tag, then call common boxes, then set below
 
     # Get common boxes from each portion of the image.
     # TODO: Get rid of hardcoded constants here.
@@ -357,8 +351,8 @@ def main(args):
     """Sets up object detection according to the provided args."""
     input_q = Queue(maxsize=args.queue_size)
     output_q = Queue(maxsize=args.queue_size)
-    drawer_proc = Process(target=draw_worker, args=(input_q, output_q,))
-    drawer_proc.start()
+    draw_proc = Process(target=draw_worker, args=(input_q, output_q,))
+    draw_proc.start()
 
     if args.stream:
         print('Reading from hls stream.')
@@ -393,7 +387,7 @@ def main(args):
     print('[INFO] elapsed time (total): {:.2f}'.format(fps.elapsed()))
     print('[INFO] approx. FPS: {:.2f}'.format(fps.fps()))
 
-    drawer_proc.join()
+    draw_proc.join()
     video_capture.stop()
     cv2.destroyAllWindows()
 
