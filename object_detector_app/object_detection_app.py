@@ -30,7 +30,7 @@ UNDETECTED_THRESHOLD = 15 # Number of frames to allow for undetected.
 EQUALITY_THRESHOLD = 30 # How close we want the edges to be for two boxes to be considered the same.
 
 MIN_BOX_DIM = 10
-MAX_BOX_DIM = 100
+MAX_BOX_DIM = 300
 
 DETECT_GPU_IDS = [0, 1, 2]
 TRACK_GPU_ID = 0
@@ -121,7 +121,7 @@ def detect_worker(input_queue, output_queue, gpu_id):
     while True:
         image_np, tag = input_queue.get()
 
-        # Expand dimensions since the model expects images to have shape: [1, None, None, 3]
+        # Expand dimensions since the model expects images to have shape: [1, Height, Width, 3]
         image_np_expanded = np.expand_dims(image_np, axis=0)
         image_tensor = detection_graph.get_tensor_by_name('image_tensor:0')
 
