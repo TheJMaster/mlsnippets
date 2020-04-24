@@ -18,8 +18,7 @@ from utils.app_utils import FPS, LocalVideoStream, HLSVideoStream
 CWD_PATH = os.getcwd()
 
 # Path to frozen detection graph. This is the actual model that is used for the object detection.
-MODEL_NAME = 'ssd_mobilenet_v1_coco_11_06_2017'
-PATH_TO_CKPT = os.path.join(CWD_PATH, 'object_detection', MODEL_NAME, 'frozen_inference_graph.pb')
+PATH_TO_CKPT = os.path.join(CWD_PATH, 'models/ssd_mobilenet/v1_coco/frozen_inference_graph.pb')
 
 NEXT_BOX_ID = 0
 TRACKED_BOX_IDS = []
@@ -119,10 +118,19 @@ def detect_worker(input_queue, output_queue, gpu_id):
             sess = tf.Session(graph=detection_graph)
 
     while True:
-        image_np, tag = input_queue.get()
-
-        # Expand dimensions since the model expects images to have shape: [1, Height, Width, 3]
-        image_np_expanded = np.expand_dims(image_np, axis=0)
+        # Expect images for batch request.
+        images = input_queue.get()
+       
+        # Expand dimensions to create batch since the model expects images to
+        # have shape: [1, Height, Width, 3]
+        batch = None
+        if type(images) is not tuple:
+            batch = np.expand_dims(images, axis=0)
+        else:
+            images_expanded = [np.expand_dims(image, axis=0) for image in images]
+            batch = np.concatenate(tuple(images_expanded))
+       
+        # Grab the tensor to populate with the image batch.
         image_tensor = detection_graph.get_tensor_by_name('image_tensor:0')
 
         # Each box represents a part of the image where a particular object was detected.
@@ -136,35 +144,38 @@ def detect_worker(input_queue, output_queue, gpu_id):
         # Run initial detection.
         (boxes, scores, classes, num_detections) = sess.run(
             [boxes, scores, classes, num_detections],
-            feed_dict={image_tensor: image_np_expanded})
+            feed_dict={image_tensor: batch})
 
-        # Flatten all results for filtering.
-        boxes = np.squeeze(boxes)
-        classes = np.squeeze(classes)
-        scores = np.squeeze(scores)
+        batch_results = []
+        for (image, boxes, scores, classes) in zip(images, boxes, scores, classes):
+            # Flatten all results for filtering.
+            boxes = np.squeeze(boxes)
+            classes = np.squeeze(classes)
+            scores = np.squeeze(scores)
+            
+            # Filter for a particular class.
+            # TODO(justin): change this to classes == 6 (bus)
+            indicies = np.argwhere(classes == 3)
+            boxes = np.squeeze(boxes[indicies])
+            scores = np.squeeze(scores[indicies])
+            
+            # Remove all instances of classes with a low score (< 0.5).
+            indicies = np.argwhere(scores > 0.5)
+            boxes = np.squeeze(boxes[indicies])
 
-        # Filter for a particular class.
-        # TODO(justin): change this to classes == 6 (bus)
-        indicies = np.argwhere(classes == 3) # class 3 == cars
-        boxes = np.squeeze(boxes[indicies])
-        scores = np.squeeze(scores[indicies])
+            # Convert all of the boxes to match style from RE-3 tracker.
+            height = image.shape[0]
+            width = image.shape[1]
+            detected_boxes = []
+            for box in boxes:
+                if isinstance(box, np.ndarray):
+                    detected_boxes.append([box[1]*width, box[0]*height, box[3]*width, box[2]*height])
+            batch_results.append(np.array(detected_boxes))
 
-        # Remove all instances of classes with a low score (< 0.5).
-        indicies = np.argwhere(scores > 0.5)
-        boxes = np.squeeze(boxes[indicies])
+        # Return bounding boxes for batch via output queue.
+        output_queue.put(np.array(batch_results))
 
-        # Convert all of the boxes to match style from RE-3 tracker.
-        height = image_np.shape[0]
-        width = image_np.shape[1]
-        detected_boxes = []
-        for box in boxes:
-            if isinstance(box, np.ndarray):
-                detected_boxes.append([box[1]*width, box[0]*height, box[3]*width, box[2]*height])
-        detected_boxes = np.array(detected_boxes)
-        
-        log("detection found {} boxes".format(len(detected_boxes)))
-        output_queue.put((detected_boxes, tag))
-
+    # Close session if loop is killed.
     sess.close()
 
 
@@ -196,15 +207,13 @@ def add_all_not_present(source, target):
     return target
 
 
-def run_detect_single_model(detect_input_queue, detect_output_queue, img, tag, output_queue):
-    detect_input_queue.put((img, tag))
-    output_queue.put(detect_output_queue.get())
-
-
-def run_detect_all_models(detect_input_queues, detect_output_queues, img, tag, output_queue):
-    for detect_input_queue, detect_output_queue in zip(detect_input_queues, detect_output_queues):
-        Process(target=run_detect_single_model,
-                args=(detect_input_queue, detect_output_queue, img, tag, output_queue)).start()
+def run_detect_batch(detect_input_queues, detect_output_queues, batch):
+    for input_queue in detect_input_queues:
+        input_queue.put(batch)
+    detect_results = []
+    for output_queue in detect_output_queues:
+        detect_results.append(output_queue.get())
+    return detect_results
 
 
 def find_objects(image_np, detect_input_queues, detect_output_queues, track_input_queue,
@@ -218,24 +227,14 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     background_img = sub_imgs[0]
     foreground_img = sub_imgs[1]
 
-    # Run three detectors for each (puting each in the queue)
-    before = time.time()
-    output_queue = Queue()
-    # TODO: Should really make this a dictionary
-    tag_for_img = {background_img.tobytes(): "b", foreground_img.tobytes(): "f", image_np.tobytes(): "w"}
-    for img in [background_img, foreground_img, image_np]:
-        Process(target=run_detect_all_models,
-                args=(detect_input_queues, detect_output_queues, img, tag_for_img[img.tobytes()], output_queue)).start()
-
-    detect_results = []
-    for _ in range(3 * len(detect_input_queues)):
-        detect_results.append(output_queue.get())
-
-    # Get common boxes from each portion of the image.
-    # TODO: Get rid of hardcoded constants here.
-    background_detected_boxes = common_boxes([boxes for boxes, tag in detect_results if tag == "b"])
-    foreground_detected_boxes = common_boxes([boxes for boxes, tag in detect_results if tag == "f"])
-    whole_detected_boxes = common_boxes([boxes for boxes, tag in detect_results if tag == "w"])
+    # Run foreground/background detection batch.
+    split_results = run_detect_batch(detect_input_queues, detect_output_queues, (background_img, foreground_img))
+    background_detected_boxes = common_boxes([boxes[0] for boxes in split_results])
+    foreground_detected_boxes = common_boxes([boxes[1] for boxes in split_results])
+   
+    # Run whole image batch.
+    whole_results = run_detect_batch(detect_input_queues, detect_output_queues, image_np)
+    whole_detected_boxes = common_boxes([boxes[0] for boxes in whole_results])
 
     # Shift y dim of foreground boxes to position relative to the entire image.
     for box in foreground_detected_boxes:
