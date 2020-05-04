@@ -2,7 +2,7 @@
 """Bus detection and tracking application."""
 
 import argparse
-from multiprocessing import Queue, Pool, Process
+from multiprocessing import Queue, Process
 import os
 import random
 import sys
@@ -167,9 +167,10 @@ def detect_worker(input_queue, output_queue, gpu_id):
             height = image.shape[0]
             width = image.shape[1]
             detected_boxes = []
-            for box in boxes:
-                if isinstance(box, np.ndarray):
-                    detected_boxes.append([box[1]*width, box[0]*height, box[3]*width, box[2]*height])
+            if np.isnan(boxes).any():  # Don't handle non listable arrays.
+                for box in list(boxes):
+                    if isinstance(box, np.ndarray):
+                        detected_boxes.append([box[1]*width, box[0]*height, box[3]*width, box[2]*height])
             batch_results.append(np.array(detected_boxes))
 
         # Return bounding boxes for batch via output queue.
@@ -207,6 +208,17 @@ def add_all_not_present(source, target):
     return target
 
 
+# Resize all boxes to become the target height and width
+def resize_all(boxes, orig_h, orig_w, new_h, new_w):
+    res = []
+    if len(boxes) == 0 or not isinstance(boxes, np.ndarray):
+        return np.array([])
+    for box in boxes:
+        if isinstance(box, np.ndarray):
+            res.append([box[1]/orig_w*new_w, box[0]/orig_h*new*h, box[3]/orig_w*new_w, box[2]/orig_h*new_h])
+    return np.array(res)
+
+
 def run_detect_batch(detect_input_queues, detect_output_queues, batch):
     for input_queue in detect_input_queues:
         input_queue.put(batch)
@@ -224,17 +236,24 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
 
     # Split images into foreground and background for additional checking.
     sub_imgs = np.split(image_np, 2)
-    background_img = sub_imgs[0]
-    foreground_img = sub_imgs[1]
+    background_img_orig = sub_imgs[0]
+    foreground_img_orig = sub_imgs[1]
+
+    # Resize images to SSD expectations (300 x 300)
+    whole_img = cv2.resize(image_np, dsize=(300, 300), interpolation=cv2.INTER_LINEAR)
+    background_img = cv2.resize(background_img_orig, dsize=(300, 300), interpolation=cv2.INTER_LINEAR)
+    foreground_img = cv2.resize(foreground_img_orig, dsize=(300, 300), interpolation=cv2.INTER_LINEAR)
 
     # Run foreground/background detection batch.
-    split_results = run_detect_batch(detect_input_queues, detect_output_queues, (background_img, foreground_img))
-    background_detected_boxes = common_boxes([boxes[0] for boxes in split_results])
-    foreground_detected_boxes = common_boxes([boxes[1] for boxes in split_results])
-   
-    # Run whole image batch.
-    whole_results = run_detect_batch(detect_input_queues, detect_output_queues, image_np)
-    whole_detected_boxes = common_boxes([boxes[0] for boxes in whole_results])
+    detect_results = run_detect_batch(detect_input_queues, detect_output_queues, (background_img, foreground_img, whole_img))
+    background_detected_boxes = common_boxes([boxes[0] for boxes in detect_results])
+    foreground_detected_boxes = common_boxes([boxes[1] for boxes in detect_results])
+    whole_detected_boxes = common_boxes([boxes[2] for boxes in detect_results])
+
+    # Resize bounding boxes to match original image sizes.
+    background_detected_boxes = resize_all(background_detected_boxes, 300, 300, background_img_orig.shape[0], background_img_orig[1])
+    foreground_detected_boxes = resize_all(foreground_detected_boxes, 300, 300, foreground_img_orig.shape[0], background_img_orig[1])
+    whole_detected_boxes = resize_all(whole_detected_boxes, 300, 300, image_np.shape[0], image_np[1])
 
     # Shift y dim of foreground boxes to position relative to the entire image.
     for box in foreground_detected_boxes:
@@ -374,7 +393,7 @@ def main(args):
         start_time = time.time()
 
         output_rgb = cv2.cvtColor(output_q.get(), cv2.COLOR_RGB2BGR)
-        cv2.imshow('Video', output_rgb)
+        # cv2.imshow('Video', output_rgb)
         fps.update()
 
         print('[INFO] elapsed time: {:.2f}'.format(time.time() - start_time))
