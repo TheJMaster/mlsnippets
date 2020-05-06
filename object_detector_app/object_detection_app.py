@@ -31,8 +31,6 @@ EQUALITY_THRESHOLD = 30 # How close we want the edges to be for two boxes to be 
 MIN_BOX_DIM = 10
 MAX_BOX_DIM = 300
 
-TRACK_GPU_ID = 0
-
 LOG=False
 
 
@@ -182,12 +180,12 @@ def detect_worker(input_queue, output_queue, gpu_id):
     sess.close()
 
 
-def track_worker(input_queue, output_queue):
+def track_worker(input_queue, output_queue, gpu_id):
     """Runs Re3 tracker on images from input queue, passing bounding boxes to output queue."""
     sys.path.insert(1, '/home/jtjohn24/mlsnippets/object_detector_app/re3-tensorflow')
     from tracker import re3_tracker  # pylint: disable-msg=import-outside-toplevel, import-error
 
-    tracker = re3_tracker.Re3Tracker(TRACK_GPU_ID)
+    tracker = re3_tracker.Re3Tracker(gpu_id)
     while True:
         image_np, box_ids, init_bounding_boxes = input_queue.get()
         if init_bounding_boxes is not None:
@@ -345,7 +343,7 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     return image_np
 
 
-def draw_worker(input_q, output_q, num_detect_workers):
+def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id):
     """Detect and track buses from input and save image annotated with bounding boxes to output."""
     # Start detection processes.
     detect_worker_input_queues = [Queue(maxsize=3)]*num_detect_workers
@@ -359,7 +357,7 @@ def draw_worker(input_q, output_q, num_detect_workers):
     # Start tracking process.
     track_input_queue = Queue(maxsize=3)
     track_output_queue = Queue(maxsize=3)
-    track = Process(target=track_worker, args=(track_input_queue, track_output_queue,))
+    track = Process(target=track_worker, args=(track_input_queue, track_output_queue, track_gpu_id,))
     track.start()
 
     # Annotate all new frames.
@@ -382,7 +380,7 @@ def main(args):
     # If no number of workers are specified, use all available GPUs
     input_q = Queue(maxsize=args.queue_size)
     output_q = Queue(maxsize=args.queue_size)
-    draw_proc = Process(target=draw_worker, args=(input_q, output_q, args.detect_workers,))
+    draw_proc = Process(target=draw_worker, args=(input_q, output_q, args.detect_workers, args.track_gpu_id,))
     draw_proc.start()
 
     if args.stream:
@@ -436,4 +434,5 @@ if __name__ == '__main__':
     PARSER.add_argument('-q-size', '--queue-size', dest='queue_size', type=int,
                         default=1, help='Size of the queue.')
     PARSER.add_argument('-w', '--workers', dest="detect_workers", type=int, default=1, help='Number of detection workers')
+    PARSER.add_argument('-tracker-gpu-id', dest="track_gpu_id", type=int, default=0, help='GPU ID to use for tracker')
     main(PARSER.parse_args())
