@@ -31,7 +31,6 @@ EQUALITY_THRESHOLD = 30 # How close we want the edges to be for two boxes to be 
 MIN_BOX_DIM = 10
 MAX_BOX_DIM = 300
 
-DETECT_GPU_IDS = [0, 1, 2]
 TRACK_GPU_ID = 0
 
 LOG=False
@@ -90,15 +89,18 @@ def validate_boxes(boxes):
 
 
 def common_boxes(all_boxes):
-    """Returns bounding boxes present in atleast 2 of 3 sets."""
-    boxes = []
-    for box in all_boxes[0]:
-        if contains_box(box, all_boxes[1]) or contains_box(box, all_boxes[2]):
-            boxes.append(box)
-    for box in all_boxes[1]:
-        if not contains_box(box, all_boxes[0]) and contains_box(box, all_boxes[2]):
-            boxes.append(box)
-    return boxes
+    """Returns bounding boxes present in a majority of sets."""
+    res_boxes = []
+    for boxes in all_boxes:
+        for box in boxes:
+            if not contains_box(box, res_boxes):
+                count = 0
+                for other_boxes in all_boxes:
+                    if contains_box(box, other_boxes):
+                        count = count + 1
+                if count > (len(all_boxes) / 2):
+                    res_boxes.append(box)
+    return res_boxes
 
 
 def detect_worker(input_queue, output_queue, gpu_id):
@@ -222,9 +224,11 @@ def resize_all(boxes, orig_h, orig_w, new_h, new_w):
 def run_detect_batch(detect_input_queues, detect_output_queues, batch):
     for input_queue in detect_input_queues:
         input_queue.put(batch)
+    log("put images in input queues")
     detect_results = []
     for output_queue in detect_output_queues:
         detect_results.append(output_queue.get())
+    log("got images from output queues")
     return detect_results
 
 
@@ -233,38 +237,45 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     # pylint: disable-msg=too-many-locals
     """Run bus detection using on image, tracking existing buses using input/output queues."""
     global NEXT_BOX_ID  # pylint: disable-msg=global-statement
-
+    log("finding objects")
+    
     # Split images into foreground and background for additional checking.
     sub_imgs = np.split(image_np, 2)
     background_img_orig = sub_imgs[0]
     foreground_img_orig = sub_imgs[1]
+    log("split images")
 
     # Resize images to SSD expectations (300 x 300)
     whole_img = cv2.resize(image_np, dsize=(300, 300), interpolation=cv2.INTER_LINEAR)
     background_img = cv2.resize(background_img_orig, dsize=(300, 300), interpolation=cv2.INTER_LINEAR)
     foreground_img = cv2.resize(foreground_img_orig, dsize=(300, 300), interpolation=cv2.INTER_LINEAR)
-
+    log("resized images to SSD")
+    
     # Run foreground/background detection batch.
     detect_results = run_detect_batch(detect_input_queues, detect_output_queues, (background_img, foreground_img, whole_img))
     background_detected_boxes = common_boxes([boxes[0] for boxes in detect_results])
     foreground_detected_boxes = common_boxes([boxes[1] for boxes in detect_results])
     whole_detected_boxes = common_boxes([boxes[2] for boxes in detect_results])
+    log("ran detection")
 
     # Resize bounding boxes to match original image sizes.
     background_detected_boxes = resize_all(background_detected_boxes, 300, 300, background_img_orig.shape[0], background_img_orig[1])
     foreground_detected_boxes = resize_all(foreground_detected_boxes, 300, 300, foreground_img_orig.shape[0], background_img_orig[1])
     whole_detected_boxes = resize_all(whole_detected_boxes, 300, 300, image_np.shape[0], image_np[1])
+    log("resized images to original")
 
     # Shift y dim of foreground boxes to position relative to the entire image.
     for box in foreground_detected_boxes:
         box[1] = box[1] + background_img.shape[0]
         box[3] = box[3] + background_img.shape[0]
+    log("shifted box dimensions")
 
     # Find unique boxes from all detection runs.
     detected_boxes = common_boxes([background_detected_boxes, foreground_detected_boxes, whole_detected_boxes])
     detected_boxes = add_all_not_present(background_detected_boxes, detected_boxes)
     detected_boxes = add_all_not_present(foreground_detected_boxes, detected_boxes)
     detected_boxes = add_all_not_present(whole_detected_boxes, detected_boxes)
+    log("combined detected boxes")
 
     # Find all of the already tracked bounding boxes.
     track_input_queue.put((image_np, TRACKED_BOX_IDS, None))
@@ -334,15 +345,16 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     return image_np
 
 
-def draw_worker(input_q, output_q):
+def draw_worker(input_q, output_q, num_detect_workers):
     """Detect and track buses from input and save image annotated with bounding boxes to output."""
     # Start detection processes.
-    detect_worker_input_queues = [Queue(maxsize=3)]*3
-    detect_worker_output_queues = [Queue(maxsize=3)]*3
-    for worker_id in range(3):
+    detect_worker_input_queues = [Queue(maxsize=3)]*num_detect_workers
+    detect_worker_output_queues = [Queue(maxsize=3)]*num_detect_workers
+    for worker_id in range(num_detect_workers):
+        # TODO: Think about if we want to support the case where worker_id != GPU ID
         Process(target=detect_worker, args=(detect_worker_input_queues[worker_id],
                                             detect_worker_output_queues[worker_id],
-                                            DETECT_GPU_IDS[worker_id])).start()
+                                            worker_id)).start()
 
     # Start tracking process.
     track_input_queue = Queue(maxsize=3)
@@ -367,9 +379,10 @@ def draw_worker(input_q, output_q):
 
 def main(args):
     """Sets up object detection according to the provided args."""
+    # If no number of workers are specified, use all available GPUs
     input_q = Queue(maxsize=args.queue_size)
     output_q = Queue(maxsize=args.queue_size)
-    draw_proc = Process(target=draw_worker, args=(input_q, output_q,))
+    draw_proc = Process(target=draw_worker, args=(input_q, output_q, args.detect_workers,))
     draw_proc.start()
 
     if args.stream:
@@ -422,4 +435,5 @@ if __name__ == '__main__':
     PARSER.add_argument('-p', '--path', dest="video_path", type=str, default=None)
     PARSER.add_argument('-q-size', '--queue-size', dest='queue_size', type=int,
                         default=1, help='Size of the queue.')
+    PARSER.add_argument('-w', '--workers', dest="detect_workers", type=int, default=1, help='Number of detection workers')
     main(PARSER.parse_args())
