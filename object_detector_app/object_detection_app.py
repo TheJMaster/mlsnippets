@@ -31,7 +31,7 @@ EQUALITY_THRESHOLD = 30 # How close we want the edges to be for two boxes to be 
 MIN_BOX_DIM = 10
 MAX_BOX_DIM = 300
 
-LOG=False
+LOG=True
 
 
 def log(info):
@@ -231,48 +231,43 @@ def run_detect_batch(detect_input_queues, detect_output_queues, batch):
 
 
 def find_objects(image_np, detect_input_queues, detect_output_queues, track_input_queue,
-                 track_output_queue):
+                 track_output_queue, x_split):
     # pylint: disable-msg=too-many-locals
     """Run bus detection using on image, tracking existing buses using input/output queues."""
     global NEXT_BOX_ID  # pylint: disable-msg=global-statement
     log("finding objects")
-    
-    # Split images into foreground and background for additional checking.
-    sub_imgs = np.split(image_np, 2)
-    background_img_orig = sub_imgs[0]
-    foreground_img_orig = sub_imgs[1]
+
+    # Split image along x axis the correct number of times.
+    sub_imgs = np.split(image_np, x_split)
+    all_imgs = sub_imgs + [image_np]  # Last image is the entire frame.
     log("split images")
 
     # Resize images to SSD expectations (300 x 300)
-    whole_img = cv2.resize(image_np, dsize=(300, 300), interpolation=cv2.INTER_LINEAR)
-    background_img = cv2.resize(background_img_orig, dsize=(300, 300), interpolation=cv2.INTER_LINEAR)
-    foreground_img = cv2.resize(foreground_img_orig, dsize=(300, 300), interpolation=cv2.INTER_LINEAR)
+    resized_imgs = [cv2.resize(img, dsize=(300, 300), interpolation=cv2.INTER_LINEAR) for img in all_imgs]
     log("resized images to SSD")
-    
+
     # Run foreground/background detection batch.
-    detect_results = run_detect_batch(detect_input_queues, detect_output_queues, (background_img, foreground_img, whole_img))
-    background_detected_boxes = common_boxes([boxes[0] for boxes in detect_results])
-    foreground_detected_boxes = common_boxes([boxes[1] for boxes in detect_results])
-    whole_detected_boxes = common_boxes([boxes[2] for boxes in detect_results])
+    detect_results = run_detect_batch(detect_input_queues, detect_output_queues, tuple(resized_imgs))
     log("ran detection")
 
     # Resize bounding boxes to match original image sizes.
-    background_detected_boxes = resize_all(background_detected_boxes, 300, 300, background_img_orig.shape[0], background_img_orig[1])
-    foreground_detected_boxes = resize_all(foreground_detected_boxes, 300, 300, foreground_img_orig.shape[0], background_img_orig[1])
-    whole_detected_boxes = resize_all(whole_detected_boxes, 300, 300, image_np.shape[0], image_np[1])
-    log("resized images to original")
+    detect_result_boxes = [[boxes[i] for boxes in detect_results] for i in range(len(all_imgs))]
+    detect_result_boxes = [common_boxes(boxes) for boxes in detect_result_boxes]
+    detect_result_boxes = [resize_all(detect_result_boxes[i], 300, 300, all_imgs[i].shape[0], all_imgs[i].shape[1]) for i in range(len(all_imgs))]
+    log("filtered and resized detected boxes")
 
     # Shift y dim of foreground boxes to position relative to the entire image.
-    for box in foreground_detected_boxes:
-        box[1] = box[1] + background_img.shape[0]
-        box[3] = box[3] + background_img.shape[0]
+    y_shift = all_imgs[0].shape[0]
+    for boxes_idx in range(len(detect_result_boxes)-1):
+        for box_idx in range(len(detect_result_boxes[boxes_idx])):
+            detect_result_boxes[boxes_id][box_id][1] = detect_result_boxes[boxes_id][box_id][1] + boxes_idx * y_shift
+            detect_result_boxes[boxes_id][box_id][3] = detect_result_boxes[boxes_id][box_id][3] + boxes_idx * y_shift
     log("shifted box dimensions")
 
     # Find unique boxes from all detection runs.
-    detected_boxes = common_boxes([background_detected_boxes, foreground_detected_boxes, whole_detected_boxes])
-    detected_boxes = add_all_not_present(background_detected_boxes, detected_boxes)
-    detected_boxes = add_all_not_present(foreground_detected_boxes, detected_boxes)
-    detected_boxes = add_all_not_present(whole_detected_boxes, detected_boxes)
+    detected_boxes = common_boxes(detect_result_boxes)
+    for boxes in detect_result_boxes:
+        detected_boxes = add_all_not_present(boxes, detected_boxes)
     log("combined detected boxes")
 
     # Find all of the already tracked bounding boxes.
@@ -343,7 +338,7 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     return image_np
 
 
-def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id):
+def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split):
     """Detect and track buses from input and save image annotated with bounding boxes to output."""
     # Start detection processes.
     detect_worker_input_queues = [Queue(maxsize=3)]*num_detect_workers
@@ -370,7 +365,7 @@ def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id):
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         output_q.put(find_objects(frame_rgb, detect_worker_input_queues,
                                   detect_worker_output_queues, track_input_queue,
-                                  track_output_queue))
+                                  track_output_queue, x_split))
     fps.stop()
     track.join()
 
@@ -380,7 +375,7 @@ def main(args):
     # If no number of workers are specified, use all available GPUs
     input_q = Queue(maxsize=args.queue_size)
     output_q = Queue(maxsize=args.queue_size)
-    draw_proc = Process(target=draw_worker, args=(input_q, output_q, args.detect_workers, args.track_gpu_id,))
+    draw_proc = Process(target=draw_worker, args=(input_q, output_q, args.detect_workers, args.track_gpu_id,args.x_split,))
     draw_proc.start()
 
     if args.stream:
@@ -435,4 +430,5 @@ if __name__ == '__main__':
                         default=1, help='Size of the queue.')
     PARSER.add_argument('-w', '--workers', dest="detect_workers", type=int, default=1, help='Number of detection workers')
     PARSER.add_argument('-tracker-gpu-id', dest="track_gpu_id", type=int, default=0, help='GPU ID to use for tracker')
+    PARSER.add_argument('-x-split', dest="x_split", type=int, default=1, help='Number of splits along the x axis before running detection (1 split refers to the entire frame)')
     main(PARSER.parse_args())
