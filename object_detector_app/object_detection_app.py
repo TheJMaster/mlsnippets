@@ -31,7 +31,7 @@ EQUALITY_THRESHOLD = 30 # How close we want the edges to be for two boxes to be 
 MIN_BOX_DIM = 10
 MAX_BOX_DIM = 300
 
-LOG=True
+LOG=False
 
 
 def log(info):
@@ -237,6 +237,14 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     """Run bus detection using on image, tracking existing buses using input/output queues."""
     global NEXT_BOX_ID  # pylint: disable-msg=global-statement
     log("finding objects: x split: {}, y split: {}".format(x_split, y_split))
+
+    # Check that splitting frame with current parameters is safe.
+    if image_np.shape[0] % x_split != 0:
+        print("ERROR: {} image width not divisible by x-split {}".format(image_np.shape[0], x_split))
+        return
+    if image_np.shape[1] % y_split != 0:
+        print("ERROR: {} image width not divisible by y-split {}".format(image_np.shape[1], y_split))
+        return
 
     # Split image along x axis the correct number of times.
     x_sub_imgs = np.split(image_np, x_split)
