@@ -230,16 +230,20 @@ def run_detect_batch(detect_input_queues, detect_output_queues, batch):
     return detect_results
 
 
+# TODO: Flip the x_split and y_split variable names
 def find_objects(image_np, detect_input_queues, detect_output_queues, track_input_queue,
-                 track_output_queue, x_split):
+                 track_output_queue, x_split, y_split):
     # pylint: disable-msg=too-many-locals
     """Run bus detection using on image, tracking existing buses using input/output queues."""
     global NEXT_BOX_ID  # pylint: disable-msg=global-statement
-    log("finding objects")
+    log("finding objects: x split: {}, y split: {}".format(x_split, y_split))
 
     # Split image along x axis the correct number of times.
-    sub_imgs = np.split(image_np, x_split)
-    all_imgs = sub_imgs + [image_np]  # Last image is the entire frame.
+    x_sub_imgs = np.split(image_np, x_split)
+    y_sub_imgs = np.array([np.hsplit(img, y_split) for img in x_sub_imgs])
+    y_sub_imgs = y_sub_imgs.reshape(x_split*y_split, int(image_np.shape[0]/x_split), int(image_np.shape[1]/y_split), 3)
+    y_sub_imgs = list(y_sub_imgs)
+    all_imgs = y_sub_imgs + [image_np]
     log("split images")
 
     # Resize images to SSD expectations (300 x 300)
@@ -256,12 +260,17 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     detect_result_boxes = [resize_all(detect_result_boxes[i], 300, 300, all_imgs[i].shape[0], all_imgs[i].shape[1]) for i in range(len(all_imgs))]
     log("filtered and resized detected boxes")
 
-    # Shift y dim of foreground boxes to position relative to the entire image.
+    # Shift dims of boxes to position relative to the entire image.
+    x_shift = all_imgs[0].shape[1]
     y_shift = all_imgs[0].shape[0]
-    for boxes_idx in range(len(detect_result_boxes)-1):
-        for box_idx in range(len(detect_result_boxes[boxes_idx])):
-            detect_result_boxes[boxes_id][box_id][1] = detect_result_boxes[boxes_id][box_id][1] + boxes_idx * y_shift
-            detect_result_boxes[boxes_id][box_id][3] = detect_result_boxes[boxes_id][box_id][3] + boxes_idx * y_shift
+    for boxes_idx in range(len(detect_result_boxes)-1):  # boxes_idx is iterating over boxes pertaining to a chunk of the frame
+        for box_idx in range(len(detect_result_boxes[boxes_idx])):  # box_idx is iterating over every box found for that chunk
+            x_delta = boxes_idx % y_split
+            y_delta = int(boxes_idx / y_split) % x_split
+            detect_result_boxes[boxes_id][box_id][0] = detect_result_boxes[boxes_id][box_id][0] + y_delta
+            detect_result_boxes[boxes_id][box_id][1] = detect_result_boxes[boxes_id][box_id][1] + x_delta
+            detect_result_boxes[boxes_id][box_id][2] = detect_result_boxes[boxes_id][box_id][2] + y_delta
+            detect_result_boxes[boxes_id][box_id][3] = detect_result_boxes[boxes_id][box_id][3] + x_delta
     log("shifted box dimensions")
 
     # Find unique boxes from all detection runs.
@@ -276,8 +285,7 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     log("tracker found {} boxes".format(len(tracked_boxes)))
 
     # Find any boxes that have been detected but not tracked, and vce versa.
-    detected_untracked_boxes, undetected_tracked_boxes = exclusive_boxes(tracked_boxes,
-                                                                         detected_boxes)
+    detected_untracked_boxes, undetected_tracked_boxes = exclusive_boxes(tracked_boxes, detected_boxes)
 
     log("{} boxes were detected but untracked".format(len(detected_untracked_boxes)))
     log("{} boxes were undetected but tracked".format(len(undetected_tracked_boxes)))
@@ -338,7 +346,7 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     return image_np
 
 
-def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split):
+def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_split):
     """Detect and track buses from input and save image annotated with bounding boxes to output."""
     # Start detection processes.
     detect_worker_input_queues = [Queue(maxsize=3)]*num_detect_workers
@@ -365,7 +373,7 @@ def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split):
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         output_q.put(find_objects(frame_rgb, detect_worker_input_queues,
                                   detect_worker_output_queues, track_input_queue,
-                                  track_output_queue, x_split))
+                                  track_output_queue, x_split, y_split))
     fps.stop()
     track.join()
 
@@ -375,7 +383,7 @@ def main(args):
     # If no number of workers are specified, use all available GPUs
     input_q = Queue(maxsize=args.queue_size)
     output_q = Queue(maxsize=args.queue_size)
-    draw_proc = Process(target=draw_worker, args=(input_q, output_q, args.detect_workers, args.track_gpu_id,args.x_split,))
+    draw_proc = Process(target=draw_worker, args=(input_q, output_q, args.detect_workers, args.track_gpu_id,args.x_split,args.y_split,))
     draw_proc.start()
 
     if args.stream:
@@ -431,4 +439,5 @@ if __name__ == '__main__':
     PARSER.add_argument('-w', '--workers', dest="detect_workers", type=int, default=1, help='Number of detection workers')
     PARSER.add_argument('-tracker-gpu-id', dest="track_gpu_id", type=int, default=0, help='GPU ID to use for tracker')
     PARSER.add_argument('-x-split', dest="x_split", type=int, default=1, help='Number of splits along the x axis before running detection (1 split refers to the entire frame)')
+    PARSER.add_argument('-y-split', dest="y_split", type=int, default=1, help='Number of splits along the y axis before running detection (1 split refers to the entire frame)')
     main(PARSER.parse_args())
