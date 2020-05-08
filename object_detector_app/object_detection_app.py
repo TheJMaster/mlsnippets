@@ -31,6 +31,9 @@ EQUALITY_THRESHOLD = 30 # How close we want the edges to be for two boxes to be 
 MIN_BOX_DIM = 10
 MAX_BOX_DIM = 300
 
+DETECT_RATE = 1
+FRAME_NUM = -1
+
 LOG=False
 
 
@@ -238,6 +241,21 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     global NEXT_BOX_ID  # pylint: disable-msg=global-statement
     log("finding objects: x split: {}, y split: {}".format(x_split, y_split))
 
+    # Check if we can just run the tracker on this frame.
+    if FRAME_NUM % DETECT_RATE != 0:
+        track_input_queue.put((image_np, TRACKED_BOX_IDS, None))
+        tracked_boxes = track_output_queue.get()
+        log("tracker found {} boxes".format(len(tracked_boxes)))
+
+        for idx, bounding_box in enumerate(tracked_boxes):
+            cv2.rectangle(image_np,
+                (int(bounding_box[0]), int(bounding_box[1])),
+                (int(bounding_box[2]), int(bounding_box[3])),
+                 COLORS[idx], 2)
+        log("added tracked boxes to image")
+        
+        return image_np
+
     # Check that splitting frame with current parameters is safe.
     if image_np.shape[0] % x_split != 0:
         print("ERROR: {} image width not divisible by x-split {}".format(image_np.shape[0], x_split))
@@ -354,8 +372,10 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     return image_np
 
 
-def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_split):
+def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_split, detect_rate):
     """Detect and track buses from input and save image annotated with bounding boxes to output."""
+    global DETECT_RATE, FRAME_NUM
+    
     # Start detection processes.
     detect_worker_input_queues = [Queue(maxsize=3)]*num_detect_workers
     detect_worker_output_queues = [Queue(maxsize=3)]*num_detect_workers
@@ -372,10 +392,12 @@ def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_
     track.start()
 
     # Annotate all new frames.
+    DETECT_RATE = detect_rate
     fps = FPS().start()
     while True:
         fps.update()
         frame = input_q.get()
+        FRAME_NUM = FRAME_NUM + 1
         if np.shape(frame) == ():
             continue
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -388,10 +410,11 @@ def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_
 
 def main(args):
     """Sets up object detection according to the provided args."""
+ 
     # If no number of workers are specified, use all available GPUs
     input_q = Queue(maxsize=args.queue_size)
     output_q = Queue(maxsize=args.queue_size)
-    draw_proc = Process(target=draw_worker, args=(input_q, output_q, args.detect_workers, args.track_gpu_id,args.x_split,args.y_split,))
+    draw_proc = Process(target=draw_worker, args=(input_q, output_q, args.detect_workers, args.track_gpu_id,args.x_split,args.y_split, args.detect_rate,))
     draw_proc.start()
 
     if args.stream:
@@ -448,4 +471,5 @@ if __name__ == '__main__':
     PARSER.add_argument('-tracker-gpu-id', dest="track_gpu_id", type=int, default=0, help='GPU ID to use for tracker')
     PARSER.add_argument('-x-split', dest="x_split", type=int, default=1, help='Number of splits along the x axis before running detection (1 split refers to the entire frame)')
     PARSER.add_argument('-y-split', dest="y_split", type=int, default=1, help='Number of splits along the y axis before running detection (1 split refers to the entire frame)')
+    PARSER.add_argument('-dr', '-detect-rate', dest="detect_rate", type=int, default=1, help='Run detection every detect rate frames.')
     main(PARSER.parse_args())
