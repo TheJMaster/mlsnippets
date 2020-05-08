@@ -19,6 +19,9 @@ CWD_PATH = os.getcwd()
 
 # Path to frozen detection graph. This is the actual model that is used for the object detection.
 PATH_TO_CKPT = os.path.join(CWD_PATH, 'models/ssd_mobilenet/v1_coco/frozen_inference_graph.pb')
+IMG_DIMS = (300, 300)
+
+MAX_QUEUE_SIZE = 3
 
 NEXT_BOX_ID = 0
 TRACKED_BOX_IDS = []
@@ -272,8 +275,8 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     all_imgs = y_sub_imgs + [image_np]
     log("split images")
 
-    # Resize images to SSD expectations (300 x 300)
-    resized_imgs = [cv2.resize(img, dsize=(300, 300), interpolation=cv2.INTER_LINEAR) for img in all_imgs]
+    # Resize images to SSD expected img size
+    resized_imgs = [cv2.resize(img, dsize=IMG_DIMS, interpolation=cv2.INTER_LINEAR) for img in all_imgs]
     log("resized images to SSD")
 
     # Run foreground/background detection batch.
@@ -283,7 +286,7 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     # Resize bounding boxes to match original image sizes.
     detect_result_boxes = [[boxes[i] for boxes in detect_results] for i in range(len(all_imgs))]
     detect_result_boxes = [common_boxes(boxes) for boxes in detect_result_boxes]
-    detect_result_boxes = [resize_all(detect_result_boxes[i], 300, 300, all_imgs[i].shape[0], all_imgs[i].shape[1]) for i in range(len(all_imgs))]
+    detect_result_boxes = [resize_all(detect_result_boxes[i], IMG_DIMS[0], IMG_DIMS[1], all_imgs[i].shape[0], all_imgs[i].shape[1]) for i in range(len(all_imgs))]
     log("filtered and resized detected boxes")
 
     # Shift dims of boxes to position relative to the entire image.
@@ -377,8 +380,8 @@ def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_
     global DETECT_RATE, FRAME_NUM
     
     # Start detection processes.
-    detect_worker_input_queues = [Queue(maxsize=3)]*num_detect_workers
-    detect_worker_output_queues = [Queue(maxsize=3)]*num_detect_workers
+    detect_worker_input_queues = [Queue(maxsize=MAX_QUEUE_SIZE)]*num_detect_workers
+    detect_worker_output_queues = [Queue(maxsize=MAX_QUEUE_SIZE)]*num_detect_workers
     for worker_id in range(num_detect_workers):
         # TODO: Think about if we want to support the case where worker_id != GPU ID
         Process(target=detect_worker, args=(detect_worker_input_queues[worker_id],
@@ -386,8 +389,8 @@ def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_
                                             worker_id)).start()
 
     # Start tracking process.
-    track_input_queue = Queue(maxsize=3)
-    track_output_queue = Queue(maxsize=3)
+    track_input_queue = Queue(maxsize=MAX_QUEUE_SIZE)
+    track_output_queue = Queue(maxsize=MAX_QUEUE_SIZE)
     track = Process(target=track_worker, args=(track_input_queue, track_output_queue, track_gpu_id,))
     track.start()
 
