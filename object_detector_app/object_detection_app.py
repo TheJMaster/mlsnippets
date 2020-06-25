@@ -37,7 +37,7 @@ MAX_BOX_DIM = 300
 DETECT_RATE = 1
 FRAME_NUM = -1
 
-LOG=False
+LOG = False
 
 
 def log(info):
@@ -76,6 +76,7 @@ def exclusive_boxes(tracked_boxes, detected_boxes):
 
 def validate_boxes(boxes):
     """Filters out invalid boxes."""
+    log("attempting to validate {} bounding boxes: {}".format(len(boxes), boxes))
     valid_boxes = []
     for box in boxes:
         valid = True
@@ -90,6 +91,14 @@ def validate_boxes(boxes):
         if valid:
             valid_boxes.append(box)
     return valid_boxes
+
+
+def deduplicate_boxes(boxes):
+    res_boxes = []
+    for box in boxes:
+        if not contains_box(box, res_boxes):
+            res_boxes.append(box)
+    return res_boxes
 
 
 def common_boxes(all_boxes):
@@ -126,7 +135,7 @@ def detect_worker(input_queue, output_queue, gpu_id):
     while True:
         # Expect images for batch request.
         images = input_queue.get()
-       
+
         # Expand dimensions to create batch since the model expects images to
         # have shape: [1, Height, Width, 3]
         batch = None
@@ -135,7 +144,7 @@ def detect_worker(input_queue, output_queue, gpu_id):
         else:
             images_expanded = [np.expand_dims(image, axis=0) for image in images]
             batch = np.concatenate(tuple(images_expanded))
-       
+
         # Grab the tensor to populate with the image batch.
         image_tensor = detection_graph.get_tensor_by_name('image_tensor:0')
 
@@ -158,25 +167,28 @@ def detect_worker(input_queue, output_queue, gpu_id):
             boxes = np.squeeze(boxes)
             classes = np.squeeze(classes)
             scores = np.squeeze(scores)
-            
+
             # Filter for a particular class.
             # TODO(justin): change this to classes == 6 (bus)
             indicies = np.argwhere(classes == 3)
             boxes = np.squeeze(boxes[indicies])
             scores = np.squeeze(scores[indicies])
-            
+
             # Remove all instances of classes with a low score (< 0.5).
             indicies = np.argwhere(scores > 0.5)
             boxes = np.squeeze(boxes[indicies])
+
+            # Set array to empty if ndim == 0
+            if boxes.ndim == 0:
+                boxes = np.array([])
 
             # Convert all of the boxes to match style from RE-3 tracker.
             height = image.shape[0]
             width = image.shape[1]
             detected_boxes = []
-            if np.isnan(boxes).any():  # Don't handle non listable arrays.
-                for box in list(boxes):
-                    if isinstance(box, np.ndarray):
-                        detected_boxes.append([box[1]*width, box[0]*height, box[3]*width, box[2]*height])
+            for box in list(boxes):
+                if isinstance(box, np.ndarray):
+                    detected_boxes.append([box[1]*width, box[0]*height, box[3]*width, box[2]*height])
             batch_results.append(np.array(detected_boxes))
 
         # Return bounding boxes for batch via output queue.
@@ -194,17 +206,23 @@ def track_worker(input_queue, output_queue, gpu_id):
     tracker = re3_tracker.Re3Tracker(gpu_id)
     while True:
         image_np, box_ids, init_bounding_boxes = input_queue.get()
-        if init_bounding_boxes is not None:
-            log("init_bounding_boxes length: {}".format(len(init_bounding_boxes)))
         tracked_boxes = np.empty(0)
         if len(box_ids) > 1:
             tracked_boxes = tracker.multi_track(box_ids, image_np, init_bounding_boxes)
         elif len(box_ids) == 1:
             init_bounding_box = None
             if init_bounding_boxes is not None:
+                log("box_ids[0]: {}".format(box_ids[0]))
+                log("init_bounding_boxes: {}".format(init_bounding_boxes))
                 init_bounding_box = init_bounding_boxes[box_ids[0]]
             tracked_boxes = tracker.track(box_ids[0], image_np, init_bounding_box)
-        output_queue.put(tracked_boxes)
+
+        if tracked_boxes.ndim == 0 or tracked_boxes.size == 0:
+            output_queue.put([])
+        elif tracked_boxes.ndim == 1:
+            output_queue.put([tracked_boxes])
+        else:
+            output_queue.put(tracked_boxes)
 
 
 def add_all_not_present(source, target):
@@ -213,15 +231,17 @@ def add_all_not_present(source, target):
             target.append(box)
     return target
 
+# bounding box: x1, y1, x2, y2
+
 
 # Resize all boxes to become the target height and width
 def resize_all(boxes, orig_h, orig_w, new_h, new_w):
     res = []
-    if len(boxes) == 0 or not isinstance(boxes, np.ndarray):
+    if len(boxes) == 0:
         return np.array([])
     for box in boxes:
         if isinstance(box, np.ndarray):
-            res.append([box[1]/orig_w*new_w, box[0]/orig_h*new*h, box[3]/orig_w*new_w, box[2]/orig_h*new_h])
+            res.append([box[0]/orig_w*new_w, box[1]/orig_h*new_h, box[2]/orig_w*new_w, box[3]/orig_h*new_h])
     return np.array(res)
 
 
@@ -256,8 +276,8 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
                 (int(bounding_box[2]), int(bounding_box[3])),
                  COLORS[idx], 2)
         log("added tracked boxes to image")
-        
-        return image_np
+
+        return image_np, []
 
     # Check that splitting frame with current parameters is safe.
     if image_np.shape[0] % x_split != 0:
@@ -281,13 +301,19 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
 
     # Run foreground/background detection batch.
     detect_results = run_detect_batch(detect_input_queues, detect_output_queues, tuple(resized_imgs))
-    log("ran detection")
+    log("got detect results")
+
+    # Combine images from different detectors.
+    detect_result_boxes = [[] for _ in range(len(all_imgs))]
+    for detect_proc_result in detect_results:  # Results from a single detection processs
+        for image_idx, image_results in enumerate(detect_proc_result):  # Results for a single image
+            detect_result_boxes[image_idx].extend(image_results)
+    log("combined images")
 
     # Resize bounding boxes to match original image sizes.
-    detect_result_boxes = [[boxes[i] for boxes in detect_results] for i in range(len(all_imgs))]
-    detect_result_boxes = [common_boxes(boxes) for boxes in detect_result_boxes]
+    detect_result_boxes = [deduplicate_boxes(boxes) for boxes in detect_result_boxes]
     detect_result_boxes = [resize_all(detect_result_boxes[i], IMG_DIMS[0], IMG_DIMS[1], all_imgs[i].shape[0], all_imgs[i].shape[1]) for i in range(len(all_imgs))]
-    log("filtered and resized detected boxes")
+    log("filtered and resized detected boxes: {} boxes".format(np.array(detect_result_boxes).shape))
 
     # Shift dims of boxes to position relative to the entire image.
     x_shift = all_imgs[0].shape[1]
@@ -296,13 +322,14 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
         for box_idx in range(len(detect_result_boxes[boxes_idx])):  # box_idx is iterating over every box found for that chunk
             x_delta = boxes_idx % y_split
             y_delta = int(boxes_idx / y_split) % x_split
-            detect_result_boxes[boxes_id][box_id][0] = detect_result_boxes[boxes_id][box_id][0] + y_delta
-            detect_result_boxes[boxes_id][box_id][1] = detect_result_boxes[boxes_id][box_id][1] + x_delta
-            detect_result_boxes[boxes_id][box_id][2] = detect_result_boxes[boxes_id][box_id][2] + y_delta
-            detect_result_boxes[boxes_id][box_id][3] = detect_result_boxes[boxes_id][box_id][3] + x_delta
+            log("X DELTA: {}, Y DELTA: {}".format(x_delta, y_delta))
+            detect_result_boxes[boxes_idx][box_idx][0] = detect_result_boxes[boxes_idx][box_idx][0] + y_delta
+            detect_result_boxes[boxes_idx][box_idx][1] = detect_result_boxes[boxes_idx][box_idx][1] + x_delta
+            detect_result_boxes[boxes_idx][box_idx][2] = detect_result_boxes[boxes_idx][box_idx][2] + y_delta
+            detect_result_boxes[boxes_idx][box_idx][3] = detect_result_boxes[boxes_idx][box_idx][3] + x_delta
     log("shifted box dimensions")
 
-    # Find unique boxes from all detection runs.
+    # Find unique boxes from all images in the batch.
     detected_boxes = common_boxes(detect_result_boxes)
     for boxes in detect_result_boxes:
         detected_boxes = add_all_not_present(boxes, detected_boxes)
@@ -333,6 +360,7 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
 
     # Add untracked but detected boxes to be detected.
     init_bounding_boxes = {}
+    log("detect_untracked_boxes: {}".format(detected_untracked_boxes))
     for box in detected_untracked_boxes:
         box_id = "box_{}".format(NEXT_BOX_ID)
         NEXT_BOX_ID = NEXT_BOX_ID + 1
@@ -346,15 +374,19 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
         UNDETECTED_COUNTS.append(0)
         log("added bounding box for {}".format(box_id))
 
+    if init_bounding_boxes == {}:
+        init_bounding_boxes = None
+
     # Run tracker again for all objects to get final bounding boxes.
     track_input_queue.put((image_np, TRACKED_BOX_IDS, init_bounding_boxes))
     bounding_boxes = track_output_queue.get()
     log("{} bounding boxes found by final tracker".format(len(bounding_boxes)))
 
     # Validate boxes before plotting.
-    detected_boxes = validate_boxes(detected_boxes)
-    bounding_boxes = validate_boxes(bounding_boxes)
-    log("validated boxes")
+    # detected_boxes = validate_boxes(detected_boxes)
+    # log("validated detected boxes")
+    # bounding_boxes = validate_boxes(bounding_boxes)
+    # log("validated boxes")
 
     # Display detected boxes in gray.
     for detected_box in detected_boxes:
@@ -364,21 +396,23 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
                       [204, 204, 204], 2)
     log("added detected boxes to image")
 
+    # Commented out just for detection accuracy testing.
     # Display tracked boxes on the image each in a different color.
     for idx, bounding_box in enumerate(bounding_boxes):
         cv2.rectangle(image_np,
-                      (int(bounding_box[0]), int(bounding_box[1])),
-                      (int(bounding_box[2]), int(bounding_box[3])),
-                      COLORS[idx], 2)
+                        (int(bounding_box[0]), int(bounding_box[1])),
+                        (int(bounding_box[2]), int(bounding_box[3])),
+                        COLORS[idx], 2)
     log("added tracked boxes to image")
 
-    return image_np
+    return (image_np, detected_boxes)
 
 
 def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_split, detect_rate):
     """Detect and track buses from input and save image annotated with bounding boxes to output."""
     global DETECT_RATE, FRAME_NUM
-    
+    log("draw_worker called")
+
     # Start detection processes.
     detect_worker_input_queues = [Queue(maxsize=MAX_QUEUE_SIZE)]*num_detect_workers
     detect_worker_output_queues = [Queue(maxsize=MAX_QUEUE_SIZE)]*num_detect_workers
@@ -387,12 +421,14 @@ def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_
         Process(target=detect_worker, args=(detect_worker_input_queues[worker_id],
                                             detect_worker_output_queues[worker_id],
                                             worker_id)).start()
+    log("draw_worker started detection pool")
 
     # Start tracking process.
     track_input_queue = Queue(maxsize=MAX_QUEUE_SIZE)
     track_output_queue = Queue(maxsize=MAX_QUEUE_SIZE)
     track = Process(target=track_worker, args=(track_input_queue, track_output_queue, track_gpu_id,))
     track.start()
+    log("draw_worker started track process")
 
     # Annotate all new frames.
     DETECT_RATE = detect_rate
@@ -400,20 +436,23 @@ def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_
     while True:
         fps.update()
         frame = input_q.get()
+        log("draw_worker got frame")
         FRAME_NUM = FRAME_NUM + 1
         if np.shape(frame) == ():
+            log("continuing")
             continue
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        output_q.put(find_objects(frame_rgb, detect_worker_input_queues,
-                                  detect_worker_output_queues, track_input_queue,
-                                  track_output_queue, x_split, y_split))
+        log("calling find_objects")
+        a, b = find_objects(frame_rgb, detect_worker_input_queues, detect_worker_output_queues, track_input_queue, track_output_queue, x_split, y_split)
+        log("find_objects returned")
+        output_q.put((a, b))
     fps.stop()
     track.join()
 
 
 def main(args):
     """Sets up object detection according to the provided args."""
- 
+
     # If no number of workers are specified, use all available GPUs
     input_q = Queue(maxsize=args.queue_size)
     output_q = Queue(maxsize=args.queue_size)
@@ -440,7 +479,7 @@ def main(args):
         input_q.put(frame)
         start_time = time.time()
 
-        output_rgb = cv2.cvtColor(output_q.get(), cv2.COLOR_RGB2BGR)
+        output_rgb = cv2.cvtColor(output_q.get()[0], cv2.COLOR_RGB2BGR)
         # cv2.imshow('Video', output_rgb)
         fps.update()
 
