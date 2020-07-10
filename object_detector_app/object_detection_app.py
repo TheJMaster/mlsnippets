@@ -7,7 +7,6 @@ import os
 import random
 import sys
 import time
-from functools import partial
 
 import numpy as np
 from termcolor import cprint
@@ -28,16 +27,13 @@ TRACKED_BOX_IDS = []
 UNDETECTED_COUNTS = []
 COLORS = []
 
-UNDETECTED_THRESHOLD = 15 # Number of frames to allow for undetected.
-EQUALITY_THRESHOLD = 30 # How close we want the edges to be for two boxes to be considered the same.
-
-MIN_BOX_DIM = 10
-MAX_BOX_DIM = 300
+UNDETECTED_THRESHOLD = 60 # Number of frames to allow for undetected.
+EQUALITY_THRESHOLD = 20 # Equality threshold for distance between bounding box edges.
 
 DETECT_RATE = 1
 FRAME_NUM = -1
 
-LOG = False
+LOG = True
 
 
 def log(info):
@@ -74,26 +70,8 @@ def exclusive_boxes(tracked_boxes, detected_boxes):
     return (np.array(detected_untracked_boxes), np.array(undetected_tracked_boxes))
 
 
-def validate_boxes(boxes):
-    """Filters out invalid boxes."""
-    log("attempting to validate {} bounding boxes: {}".format(len(boxes), boxes))
-    valid_boxes = []
-    for box in boxes:
-        valid = True
-        x_dim = abs(box[2] - box[0])
-        y_dim = abs(box[3] - box[1])
-        # Ensure each dimension is at least the min dim
-        if x_dim < MIN_BOX_DIM or y_dim < MIN_BOX_DIM:
-            valid = False
-        # Ensure each dimension is at most the max dim
-        if x_dim > MAX_BOX_DIM or y_dim > MAX_BOX_DIM:
-            valid = False
-        if valid:
-            valid_boxes.append(box)
-    return valid_boxes
-
-
 def deduplicate_boxes(boxes):
+    """ Remove duplicate bounding boxes from list. """
     res_boxes = []
     for box in boxes:
         if not contains_box(box, res_boxes):
@@ -139,7 +117,7 @@ def detect_worker(input_queue, output_queue, gpu_id):
         # Expand dimensions to create batch since the model expects images to
         # have shape: [1, Height, Width, 3]
         batch = None
-        if type(images) is not tuple:
+        if not isinstance(images, tuple):
             batch = np.expand_dims(images, axis=0)
         else:
             images_expanded = [np.expand_dims(image, axis=0) for image in images]
@@ -162,7 +140,7 @@ def detect_worker(input_queue, output_queue, gpu_id):
             feed_dict={image_tensor: batch})
 
         batch_results = []
-        for (image, boxes, scores, classes) in zip(images, boxes, scores, classes):
+        for (image, boxes, scores, classes) in zip(batch, boxes, scores, classes):
             # Flatten all results for filtering.
             boxes = np.squeeze(boxes)
             classes = np.squeeze(classes)
@@ -188,7 +166,8 @@ def detect_worker(input_queue, output_queue, gpu_id):
             detected_boxes = []
             for box in list(boxes):
                 if isinstance(box, np.ndarray):
-                    detected_boxes.append([box[1]*width, box[0]*height, box[3]*width, box[2]*height])
+                    detected_boxes.append([box[1]*width, box[0]*height,
+                                           box[3]*width, box[2]*height])
             batch_results.append(np.array(detected_boxes))
 
         # Return bounding boxes for batch via output queue.
@@ -226,26 +205,26 @@ def track_worker(input_queue, output_queue, gpu_id):
 
 
 def add_all_not_present(source, target):
+    """ Adds bounding boxes from source not in target. """
     for box in source:
         if not contains_box(box, target):
             target.append(box)
     return target
 
-# bounding box: x1, y1, x2, y2
-
-
-# Resize all boxes to become the target height and width
 def resize_all(boxes, orig_h, orig_w, new_h, new_w):
+    """ Resize all boxes to become the target height and width. """
     res = []
-    if len(boxes) == 0:
+    if boxes == []:
         return np.array([])
     for box in boxes:
         if isinstance(box, np.ndarray):
-            res.append([box[0]/orig_w*new_w, box[1]/orig_h*new_h, box[2]/orig_w*new_w, box[3]/orig_h*new_h])
+            res.append([box[0]/orig_w*new_w, box[1]/orig_h*new_h,
+                        box[2]/orig_w*new_w, box[3]/orig_h*new_h])
     return np.array(res)
 
 
 def run_detect_batch(detect_input_queues, detect_output_queues, batch):
+    """ Runs detection on the batch of images across all threads. """
     for input_queue in detect_input_queues:
         input_queue.put(batch)
     log("put images in input queues")
@@ -256,7 +235,11 @@ def run_detect_batch(detect_input_queues, detect_output_queues, batch):
     return detect_results
 
 
-# TODO: Flip the x_split and y_split variable names
+def is_valid_coord(coord, max_coord):
+    """ Returns true iff coord >= 0 and coord <= max_coord  """
+    return coord >= 0 and coord <= max_coord
+
+
 def find_objects(image_np, detect_input_queues, detect_output_queues, track_input_queue,
                  track_output_queue, x_split, y_split):
     # pylint: disable-msg=too-many-locals
@@ -272,9 +255,9 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
 
         for idx, bounding_box in enumerate(tracked_boxes):
             cv2.rectangle(image_np,
-                (int(bounding_box[0]), int(bounding_box[1])),
-                (int(bounding_box[2]), int(bounding_box[3])),
-                 COLORS[idx], 2)
+                          (int(bounding_box[0]), int(bounding_box[1])),
+                          (int(bounding_box[2]), int(bounding_box[3])),
+                          COLORS[idx], 2)
         log("added tracked boxes to image")
 
         return image_np, []
@@ -282,10 +265,10 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     # Check that splitting frame with current parameters is safe.
     if image_np.shape[0] % x_split != 0:
         print("ERROR: {} image width not divisible by x-split {}".format(image_np.shape[0], x_split))
-        return
+        return image_np, []
     if image_np.shape[1] % y_split != 0:
         print("ERROR: {} image width not divisible by y-split {}".format(image_np.shape[1], y_split))
-        return
+        return image_np, []
 
     # Split image along x axis the correct number of times.
     x_sub_imgs = np.split(image_np, x_split)
@@ -318,15 +301,17 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     # Shift dims of boxes to position relative to the entire image.
     x_shift = all_imgs[0].shape[1]
     y_shift = all_imgs[0].shape[0]
+    log("x_shift: {}, y_shift: {}".format(x_shift, y_shift))
     for boxes_idx in range(len(detect_result_boxes)-1):  # boxes_idx is iterating over boxes pertaining to a chunk of the frame
         for box_idx in range(len(detect_result_boxes[boxes_idx])):  # box_idx is iterating over every box found for that chunk
-            x_delta = boxes_idx % y_split
-            y_delta = int(boxes_idx / y_split) % x_split
+            x_delta = (boxes_idx % y_split) * x_shift
+            y_delta = ((int(boxes_idx / x_split)) % y_split) * y_shift
+            log("boxes_idx: {}, box_idx: {}".format(boxes_idx, box_idx))
             log("X DELTA: {}, Y DELTA: {}".format(x_delta, y_delta))
-            detect_result_boxes[boxes_idx][box_idx][0] = detect_result_boxes[boxes_idx][box_idx][0] + y_delta
-            detect_result_boxes[boxes_idx][box_idx][1] = detect_result_boxes[boxes_idx][box_idx][1] + x_delta
-            detect_result_boxes[boxes_idx][box_idx][2] = detect_result_boxes[boxes_idx][box_idx][2] + y_delta
-            detect_result_boxes[boxes_idx][box_idx][3] = detect_result_boxes[boxes_idx][box_idx][3] + x_delta
+            detect_result_boxes[boxes_idx][box_idx][0] = detect_result_boxes[boxes_idx][box_idx][0] + x_delta
+            detect_result_boxes[boxes_idx][box_idx][1] = detect_result_boxes[boxes_idx][box_idx][1] + y_delta
+            detect_result_boxes[boxes_idx][box_idx][2] = detect_result_boxes[boxes_idx][box_idx][2] + x_delta
+            detect_result_boxes[boxes_idx][box_idx][3] = detect_result_boxes[boxes_idx][box_idx][3] + y_delta
     log("shifted box dimensions")
 
     # Find unique boxes from all images in the batch.
@@ -382,12 +367,6 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     bounding_boxes = track_output_queue.get()
     log("{} bounding boxes found by final tracker".format(len(bounding_boxes)))
 
-    # Validate boxes before plotting.
-    # detected_boxes = validate_boxes(detected_boxes)
-    # log("validated detected boxes")
-    # bounding_boxes = validate_boxes(bounding_boxes)
-    # log("validated boxes")
-
     # Display detected boxes in gray.
     for detected_box in detected_boxes:
         cv2.rectangle(image_np,
@@ -399,10 +378,21 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     # Commented out just for detection accuracy testing.
     # Display tracked boxes on the image each in a different color.
     for idx, bounding_box in enumerate(bounding_boxes):
+        log("bounding_box[0]: {}".format(int(bounding_box[0])))
+        log("bounding_box[1]: {}".format(int(bounding_box[1])))
+        log("bounding_box[2]: {}".format(int(bounding_box[2])))
+        log("bounding_box[3]: {}".format(int(bounding_box[3])))
+        log("COLORS[idx]: {}".format(COLORS[idx]))
+
+        # Tracker on occasion returns negative or out of bounds coordinate numbers.
+        # Be defensive against such bounding boxes here by filtering out erroneous boxes.
+        if not is_valid_coord(bounding_box[0], image_np.shape[0]) or not is_valid_coord(bounding_box[1], image_np.shape[1]) or not is_valid_coord(bounding_box[2], image_np.shape[0]) or not is_valid_coord(bounding_box[3], image_np.shape[1]):
+            continue
+
         cv2.rectangle(image_np,
-                        (int(bounding_box[0]), int(bounding_box[1])),
-                        (int(bounding_box[2]), int(bounding_box[3])),
-                        COLORS[idx], 2)
+                      (int(bounding_box[0]), int(bounding_box[1])),
+                      (int(bounding_box[2]), int(bounding_box[3])),
+                      COLORS[idx], 2)
     log("added tracked boxes to image")
 
     return (image_np, detected_boxes)
@@ -417,7 +407,7 @@ def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_
     detect_worker_input_queues = [Queue(maxsize=MAX_QUEUE_SIZE)]*num_detect_workers
     detect_worker_output_queues = [Queue(maxsize=MAX_QUEUE_SIZE)]*num_detect_workers
     for worker_id in range(num_detect_workers):
-        # TODO: Think about if we want to support the case where worker_id != GPU ID
+        # TODO: Consider adding support for the case where worker_id != GPU_ID.
         Process(target=detect_worker, args=(detect_worker_input_queues[worker_id],
                                             detect_worker_output_queues[worker_id],
                                             worker_id)).start()
@@ -456,7 +446,9 @@ def main(args):
     # If no number of workers are specified, use all available GPUs
     input_q = Queue(maxsize=args.queue_size)
     output_q = Queue(maxsize=args.queue_size)
-    draw_proc = Process(target=draw_worker, args=(input_q, output_q, args.detect_workers, args.track_gpu_id,args.x_split,args.y_split, args.detect_rate,))
+    draw_proc = Process(target=draw_worker, args=(input_q, output_q, args.detect_workers,
+                                                  args.track_gpu_id, args.x_split, args.y_split,
+                                                  args.detect_rate,))
     draw_proc.start()
 
     if args.stream:
@@ -473,25 +465,33 @@ def main(args):
                                          width=args.width,
                                          height=args.height).start()
 
+
+    video_out = cv2.VideoWriter('output.avi', cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'), 30, (720, 480))
     fps = FPS().start()
     while True:  # fps._numFrames < 120
-        frame = video_capture.read()
-        input_q.put(frame)
-        start_time = time.time()
+        try:
+            frame = video_capture.read()
+            input_q.put(frame)
+            start_time = time.time()
 
-        output_rgb = cv2.cvtColor(output_q.get()[0], cv2.COLOR_RGB2BGR)
-        # cv2.imshow('Video', output_rgb)
-        fps.update()
+            output_rgb = cv2.cvtColor(output_q.get()[0], cv2.COLOR_RGB2BGR)
+            # cv2.imshow('Video', output_rgb)
+            video_out.write(output_rgb)
+            fps.update()
 
-        print('[INFO] elapsed time: {:.2f}'.format(time.time() - start_time))
+            print('[INFO] elapsed time: {:.2f}'.format(time.time() - start_time))
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+        except (KeyboardInterrupt, SystemExit):
+            video_out.release()
             break
 
     fps.stop()
     print('[INFO] elapsed time (total): {:.2f}'.format(fps.elapsed()))
     print('[INFO] approx. FPS: {:.2f}'.format(fps.fps()))
 
+    video_out.release()
     draw_proc.join()
     video_capture.stop()
     cv2.destroyAllWindows()
