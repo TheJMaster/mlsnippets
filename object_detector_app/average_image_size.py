@@ -1,7 +1,7 @@
 import glob
 import cv2
 
-IMAGES_PATH = "kitti-object-detection/kitti_single/training/image_2/*.png"
+IMAGES_PATH = "test_input/kitti_single/training/image_2/*.png"
 
 def main():
     image_paths = sorted(glob.glob(IMAGES_PATH))[0:500]

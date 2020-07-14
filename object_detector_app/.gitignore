@@ -91,5 +91,12 @@ ENV/
 # Custom
 .idea/
 
+# Testing input files.
+test_input/
+
 # Output videos
 *.avi
+
+# Output files from benchmarking and testing
+*.csv
+/img_out/

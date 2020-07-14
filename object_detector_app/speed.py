@@ -8,7 +8,7 @@ import glob
 import time
 
 # Path to input png file
-IMAGES_PATH = "kitti-object-detection/kitti_single/training/image_2/*.png"
+IMAGES_PATH = "test_input/kitti_single/training/image_2/*.png"
 
 # Configs to benchmark speed.
 # Configs are stored as the map {var-name -> value}
