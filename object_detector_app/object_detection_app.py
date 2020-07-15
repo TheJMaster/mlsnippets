@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Bus detection and tracking application."""
+"""Object detection and tracking application."""
 
 import argparse
 from multiprocessing import Queue, Process
@@ -9,7 +9,6 @@ import sys
 import time
 
 import numpy as np
-from termcolor import cprint
 
 import cv2
 from utils.app_utils import FPS, LocalVideoStream, HLSVideoStream
@@ -18,21 +17,27 @@ CWD_PATH = os.getcwd()
 
 # Path to frozen detection graph. This is the actual model that is used for the object detection.
 PATH_TO_CKPT = os.path.join(CWD_PATH, 'models/ssd_mobilenet/v1_coco/frozen_inference_graph.pb')
-IMG_DIMS = (300, 300)
 
+# Dimensions required/encourage by Tensorflow Object Detection API model.
+DETECT_IMG_DIMS = (300, 300)
+
+# Max queue size for detection and tracking input/output threads.
 MAX_QUEUE_SIZE = 3
 
-NEXT_BOX_ID = 0
-TRACKED_BOX_IDS = []
-UNDETECTED_COUNTS = []
-COLORS = []
+NEXT_BOX_ID = 0  # ID to use for next new bounding box.
+
+# Note that each index of the following list refers to the same bounding box.
+TRACKED_BOX_IDS = []  # IDs of bounding boxes being tracked in the current frame.
+UNDETECTED_COUNTS = []  # Counts of how many times a tracked box has gone undetected.
+COLORS = []  # Colors for the tracked bounding box.
 
 UNDETECTED_THRESHOLD = 20 # Number of frames to allow for undetected.
 EQUALITY_THRESHOLD = 20 # Equality threshold for distance between bounding box edges.
 
-DETECT_RATE = 1
-FRAME_NUM = -1
+DETECT_RATE = 1  # How frequently to run detection (ever DETECT_RATE frames)
+FRAME_NUM = -1  # Current frame number (starts at 0)
 
+# If specified, output video results.
 OUTPUT_FRAME_RATE = 30
 OUTPUT_DIMS = (720, 480)
 
@@ -43,7 +48,9 @@ def approx_eq(num_one, num_two):
 
 
 def contains_box(box, boxes):
-    """Returns true iff the list of boxes (approx) contains the provided box."""
+    """Returns true iff the list of boxes (approx) contains the provided box.
+       Two boxes are considered equal iff two edges are within EQUALITY_THRESHOLD
+       distance of each other. """
     for candidate_box in boxes:
         if sum([approx_eq(box[i], candidate_box[i]) for i in range(len(box))]) >= len(box) / 2:
             return True
@@ -62,7 +69,7 @@ def exclusive_boxes(tracked_boxes, detected_boxes):
         if not contains_box(box, detected_boxes):
             undetected_tracked_boxes.append(box)
 
-    return (np.array(detected_untracked_boxes), np.array(undetected_tracked_boxes))
+    return (detected_untracked_boxes, undetected_tracked_boxes)
 
 
 def deduplicate_boxes(boxes):
@@ -106,7 +113,6 @@ def detect_worker(input_queue, output_queue, gpu_id):
             sess = tf.Session(graph=detection_graph)
 
     while True:
-        # Expect images for batch request.
         images = input_queue.get()
 
         # Expand dimensions to create batch since the model expects images to
@@ -142,12 +148,12 @@ def detect_worker(input_queue, output_queue, gpu_id):
             scores = np.squeeze(scores)
 
             # Filter for a particular class.
-            # TODO(justin): change this to classes == 6 (bus)
-            indicies = np.argwhere(classes == 3)
+            # Note: classes == 3 (car) or classes == 6 (bus)
+            indicies = np.argwhere(classes == 3 or classes == 6)
             boxes = np.squeeze(boxes[indicies])
             scores = np.squeeze(scores[indicies])
 
-            # Remove all instances of classes with a low score (< 0.5).
+            # Remove all instances of classes with a low confidence score (< 0.5).
             indicies = np.argwhere(scores > 0.5)
             boxes = np.squeeze(boxes[indicies])
 
@@ -303,8 +309,10 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     track_input_queue.put((image_np, TRACKED_BOX_IDS, None))
     tracked_boxes = track_output_queue.get()
 
-    # Find any boxes that have been detected but not tracked, and vce versa.
+    # Find any boxes that have been detected but not tracked, and vice versa.
     detected_untracked_boxes, undetected_tracked_boxes = exclusive_boxes(tracked_boxes, detected_boxes)
+    detected_untracked_boxes = np.array(detected_untracked_boxes)
+    undetected_tracked_boxes = np.array(undetected_tracked_boxes)
 
     # Remove tracked but undetected boxes from tracking.
     for i, box in reversed(list(enumerate(tracked_boxes))):
@@ -345,7 +353,6 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
                       (int(detected_box[2]), int(detected_box[3])),
                       [204, 204, 204], 2)
 
-    # Commented out just for detection accuracy testing.
     # Display tracked boxes on the image each in a different color.
     for idx, bounding_box in enumerate(bounding_boxes):
         # Tracker on occasion returns negative or out of bounds coordinate numbers.
