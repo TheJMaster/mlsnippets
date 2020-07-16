@@ -24,19 +24,15 @@ DETECT_IMG_DIMS = (300, 300)
 # Max queue size for detection and tracking input/output threads.
 MAX_QUEUE_SIZE = 3
 
-NEXT_BOX_ID = 0  # ID to use for next new bounding box.
-
-# Note that each index of the following list refers to the same bounding box.
-TRACKED_BOX_IDS = []  # IDs of bounding boxes being tracked in the current frame.
-UNDETECTED_COUNTS = []  # Counts of how many times a tracked box has gone undetected.
-COLORS = []  # Colors for the tracked bounding box.
-
-UNDETECTED_THRESHOLD = 20 # Number of frames to allow for undetected.
-EQUALITY_THRESHOLD = 20 # Equality threshold for distance between bounding box edges.
+UNDETECTED_THRESHOLD = 30 # Number of frames to allow for undetected.
+EQUALITY_THRESHOLD = 10 # Equality threshold for distance between bounding box edges.
 
 # If specified, output video results.
 OUTPUT_FRAME_RATE = 30
 OUTPUT_DIMS = (720, 480)
+
+
+# UTILITY FUNCTIONS
 
 
 def approx_eq(num_one, num_two):
@@ -91,6 +87,44 @@ def common_boxes(all_boxes):
                 if count > (len(all_boxes) / 2):
                     res_boxes.append(box)
     return res_boxes
+
+
+def add_all_not_present(source, target):
+    """ Adds bounding boxes from source not in target. """
+    for box in source:
+        if not contains_box(box, target):
+            target.append(box)
+    return target
+
+
+def resize_all(boxes, orig_h, orig_w, new_h, new_w):
+    """ Resize all boxes to become the target height and width. """
+    res = []
+    if boxes == []:
+        return np.array([])
+    for box in boxes:
+        if isinstance(box, np.ndarray):
+            res.append([box[0]/orig_w*new_w, box[1]/orig_h*new_h,
+                        box[2]/orig_w*new_w, box[3]/orig_h*new_h])
+    return np.array(res)
+
+
+def run_detect_batch(detect_input_queues, detect_output_queues, batch):
+    """ Runs detection on the batch of images across all threads. """
+    for input_queue in detect_input_queues:
+        input_queue.put(batch)
+    detect_results = []
+    for output_queue in detect_output_queues:
+        detect_results.append(output_queue.get())
+    return detect_results
+
+
+def is_valid_coord(coord, max_coord):
+    """ Returns true iff coord >= 0 and coord <= max_coord  """
+    return coord >= 0 and coord <= max_coord
+
+
+# WORKER FUNCTIONS
 
 
 def detect_worker(input_queue, output_queue, gpu_id):
@@ -200,58 +234,22 @@ def track_worker(input_queue, output_queue, gpu_id):
             output_queue.put(tracked_boxes)
 
 
-def add_all_not_present(source, target):
-    """ Adds bounding boxes from source not in target. """
-    for box in source:
-        if not contains_box(box, target):
-            target.append(box)
-    return target
-
-
-def resize_all(boxes, orig_h, orig_w, new_h, new_w):
-    """ Resize all boxes to become the target height and width. """
-    res = []
-    if boxes == []:
-        return np.array([])
-    for box in boxes:
-        if isinstance(box, np.ndarray):
-            res.append([box[0]/orig_w*new_w, box[1]/orig_h*new_h,
-                        box[2]/orig_w*new_w, box[3]/orig_h*new_h])
-    return np.array(res)
-
-
-def run_detect_batch(detect_input_queues, detect_output_queues, batch):
-    """ Runs detection on the batch of images across all threads. """
-    for input_queue in detect_input_queues:
-        input_queue.put(batch)
-    detect_results = []
-    for output_queue in detect_output_queues:
-        detect_results.append(output_queue.get())
-    return detect_results
-
-
-def is_valid_coord(coord, max_coord):
-    """ Returns true iff coord >= 0 and coord <= max_coord  """
-    return coord >= 0 and coord <= max_coord
-
-
 def find_objects(image_np, detect_input_queues, detect_output_queues, track_input_queue,
-                 track_output_queue, x_split, y_split, tracker_only):
-    # pylint: disable-msg=too-many-locals
+                 track_output_queue, x_split, y_split, tracked_box_ids, undetected_counts,
+                 box_colors, next_box_id, tracker_only):
     """Run bus detection using on image, tracking existing buses using input/output queues.
        Returns annotated image and detected box list through output queue. """
-    global NEXT_BOX_ID  # pylint: disable-msg=global-statement
 
     # Check if we can just run the tracker on this frame.
     if tracker_only:
-        track_input_queue.put((image_np, TRACKED_BOX_IDS, None))
+        track_input_queue.put((image_np, tracked_box_ids, None))
         tracked_boxes = track_output_queue.get()
 
         for idx, bounding_box in enumerate(tracked_boxes):
             cv2.rectangle(image_np,
                           (int(bounding_box[0]), int(bounding_box[1])),
                           (int(bounding_box[2]), int(bounding_box[3])),
-                          COLORS[idx], 2)
+                          box_colors[idx], 2)
 
         return image_np, []
 
@@ -311,7 +309,7 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
         detected_boxes = add_all_not_present(boxes, detected_boxes)
 
     # Find all of the already tracked bounding boxes.
-    track_input_queue.put((image_np, TRACKED_BOX_IDS, None))
+    track_input_queue.put((image_np, tracked_box_ids, None))
     tracked_boxes = track_output_queue.get()
 
     # Find any boxes that have been detected but not tracked, and vice versa.
@@ -323,33 +321,31 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     # Remove tracked but undetected boxes from tracking.
     for i, box in reversed(list(enumerate(tracked_boxes))):
         if np.transpose(box) in undetected_tracked_boxes:
-            UNDETECTED_COUNTS[i] = UNDETECTED_COUNTS[i] + 1
-            if UNDETECTED_COUNTS[i] == UNDETECTED_THRESHOLD:
-                del TRACKED_BOX_IDS[i]
-                del COLORS[i]
-                del UNDETECTED_COUNTS[i]
+            undetected_counts[i] += 1
+            if undetected_counts[i] == UNDETECTED_THRESHOLD:
+                del tracked_box_ids[i], undetected_counts[i], box_colors[i]
         else:
-            UNDETECTED_COUNTS[i] = 0
+            undetected_counts[i] = 0
 
     # Add untracked but detected boxes to be detected.
     init_bounding_boxes = {}
     for box in detected_untracked_boxes:
-        box_id = "box_{}".format(NEXT_BOX_ID)
-        NEXT_BOX_ID = NEXT_BOX_ID + 1
-        TRACKED_BOX_IDS.append(box_id)
+        box_id = "box_{}".format(next_box_id)
+        next_box_id += 1
+        tracked_box_ids.append(box_id)
         init_bounding_boxes[box_id] = box
 
         hue = random.uniform(0, 1) * 255
         color = cv2.cvtColor(np.uint8([[[hue, 128, 200]]]), cv2.COLOR_HSV2RGB).squeeze().tolist()
-        COLORS.append(color)
+        box_colors.append(color)
 
-        UNDETECTED_COUNTS.append(0)
+        undetected_counts.append(0)
 
     if init_bounding_boxes == {}:
         init_bounding_boxes = None
 
     # Run tracker again for all objects to get final bounding boxes.
-    track_input_queue.put((image_np, TRACKED_BOX_IDS, init_bounding_boxes))
+    track_input_queue.put((image_np, tracked_box_ids, init_bounding_boxes))
     bounding_boxes = track_output_queue.get()
 
     # Display detected boxes in gray.
@@ -372,9 +368,9 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
         cv2.rectangle(image_np,
                       (int(bounding_box[0]), int(bounding_box[1])),
                       (int(bounding_box[2]), int(bounding_box[3])),
-                      COLORS[idx], 2)
+                      box_colors[idx], 2)
 
-    return (image_np, detected_boxes)
+    return (image_np, detected_boxes, next_box_id)
 
 
 def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_split, detect_rate):
@@ -398,6 +394,10 @@ def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_
     # Annotate all new frames.
     fps = FPS().start()
     frame_num = -1
+    tracked_box_ids = []
+    undetected_counts = []
+    box_colors = []
+    next_box_id = 0
     while True:
         fps.update()
         frame = input_q.get()
@@ -406,12 +406,21 @@ def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_
             continue
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         tracker_only = (frame_num % detect_rate) != 0
-        img, boxes = find_objects(frame_rgb, detect_worker_input_queues,
-                                  detect_worker_output_queues, track_input_queue,
-                                  track_output_queue, x_split, y_split, tracker_only)
+        img, boxes, next_box_id = find_objects(frame_rgb,
+                                               detect_worker_input_queues, detect_worker_output_queues,
+                                               track_input_queue, track_output_queue,
+                                               x_split, y_split,
+                                               tracked_box_ids,
+                                               undetected_counts,
+                                               box_colors,
+                                               next_box_id,
+                                               tracker_only)
         output_q.put((img, boxes))
     fps.stop()
     track.join()
+
+
+# MAIN FUNCTIONS
 
 
 def main(args):
