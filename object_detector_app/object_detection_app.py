@@ -241,7 +241,8 @@ def is_valid_coord(coord, max_coord):
 def find_objects(image_np, detect_input_queues, detect_output_queues, track_input_queue,
                  track_output_queue, x_split, y_split):
     # pylint: disable-msg=too-many-locals
-    """Run bus detection using on image, tracking existing buses using input/output queues."""
+    """Run bus detection using on image, tracking existing buses using input/output queues.
+       Returns annotated image and detected box list through output queue. """
     global NEXT_BOX_ID  # pylint: disable-msg=global-statement
 
     # Check if we can just run the tracker on this frame.
@@ -259,24 +260,29 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
 
     # Check that splitting frame with current parameters is safe.
     if image_np.shape[0] % x_split != 0:
-        print("ERROR: {} image width not divisible by x-split {}".format(image_np.shape[0], x_split))
+        print("ERROR: {} image width not divisible by x-split {}".format(image_np.shape[0],
+                                                                         x_split))
         return image_np, []
     if image_np.shape[1] % y_split != 0:
-        print("ERROR: {} image width not divisible by y-split {}".format(image_np.shape[1], y_split))
+        print("ERROR: {} image width not divisible by y-split {}".format(image_np.shape[1],
+                                                                         y_split))
         return image_np, []
 
     # Split image along x axis the correct number of times.
     x_sub_imgs = np.split(image_np, x_split)
     y_sub_imgs = np.array([np.hsplit(img, y_split) for img in x_sub_imgs])
-    y_sub_imgs = y_sub_imgs.reshape(x_split*y_split, int(image_np.shape[0]/x_split), int(image_np.shape[1]/y_split), 3)
+    y_sub_imgs = y_sub_imgs.reshape(x_split*y_split, int(image_np.shape[0]/x_split),
+                                    int(image_np.shape[1]/y_split), 3)
     y_sub_imgs = list(y_sub_imgs)
     all_imgs = y_sub_imgs + [image_np]
 
     # Resize images to SSD expected img size
-    resized_imgs = [cv2.resize(img, dsize=IMG_DIMS, interpolation=cv2.INTER_LINEAR) for img in all_imgs]
+    resized_imgs = [cv2.resize(img, dsize=DETECT_IMG_DIMS,
+                               interpolation=cv2.INTER_LINEAR) for img in all_imgs]
 
     # Run foreground/background detection batch.
-    detect_results = run_detect_batch(detect_input_queues, detect_output_queues, tuple(resized_imgs))
+    detect_results = run_detect_batch(detect_input_queues, detect_output_queues,
+                                      tuple(resized_imgs))
 
     # Combine images from different detectors.
     detect_result_boxes = [[] for _ in range(len(all_imgs))]
@@ -286,19 +292,21 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
 
     # Resize bounding boxes to match original image sizes.
     detect_result_boxes = [deduplicate_boxes(boxes) for boxes in detect_result_boxes]
-    detect_result_boxes = [resize_all(detect_result_boxes[i], IMG_DIMS[0], IMG_DIMS[1], all_imgs[i].shape[0], all_imgs[i].shape[1]) for i in range(len(all_imgs))]
+    detect_result_boxes = [resize_all(detect_result_boxes[i], DETECT_IMG_DIMS[0],
+                                      DETECT_IMG_DIMS[1], all_imgs[i].shape[0],
+                                      all_imgs[i].shape[1]) for i in range(len(all_imgs))]
 
     # Shift dims of boxes to position relative to the entire image.
     x_shift = all_imgs[0].shape[1]
     y_shift = all_imgs[0].shape[0]
-    for boxes_idx in range(len(detect_result_boxes)-1):  # boxes_idx is iterating over boxes pertaining to a chunk of the frame
-        for box_idx in range(len(detect_result_boxes[boxes_idx])):  # box_idx is iterating over every box found for that chunk
+    for boxes_idx in range(len(detect_result_boxes)-1):  # boxes_idx corresponds to a split
+        for box_idx in range(len(detect_result_boxes[boxes_idx])):  # box_idx to a box in a split
             x_delta = (boxes_idx % y_split) * x_shift
             y_delta = ((int(boxes_idx / x_split)) % y_split) * y_shift
-            detect_result_boxes[boxes_idx][box_idx][0] = detect_result_boxes[boxes_idx][box_idx][0] + x_delta
-            detect_result_boxes[boxes_idx][box_idx][1] = detect_result_boxes[boxes_idx][box_idx][1] + y_delta
-            detect_result_boxes[boxes_idx][box_idx][2] = detect_result_boxes[boxes_idx][box_idx][2] + x_delta
-            detect_result_boxes[boxes_idx][box_idx][3] = detect_result_boxes[boxes_idx][box_idx][3] + y_delta
+            detect_result_boxes[boxes_idx][box_idx][0] += x_delta
+            detect_result_boxes[boxes_idx][box_idx][1] += y_delta
+            detect_result_boxes[boxes_idx][box_idx][2] += x_delta
+            detect_result_boxes[boxes_idx][box_idx][3] += y_delta
 
     # Find unique boxes from all images in the batch.
     detected_boxes = common_boxes(detect_result_boxes)
@@ -310,7 +318,8 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     tracked_boxes = track_output_queue.get()
 
     # Find any boxes that have been detected but not tracked, and vice versa.
-    detected_untracked_boxes, undetected_tracked_boxes = exclusive_boxes(tracked_boxes, detected_boxes)
+    detected_untracked_boxes, undetected_tracked_boxes = exclusive_boxes(tracked_boxes,
+                                                                         detected_boxes)
     detected_untracked_boxes = np.array(detected_untracked_boxes)
     undetected_tracked_boxes = np.array(undetected_tracked_boxes)
 
@@ -357,7 +366,10 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     for idx, bounding_box in enumerate(bounding_boxes):
         # Tracker on occasion returns negative or out of bounds coordinate numbers.
         # Be defensive against such bounding boxes here by filtering out erroneous boxes.
-        if not is_valid_coord(bounding_box[0], image_np.shape[0]) or not is_valid_coord(bounding_box[1], image_np.shape[1]) or not is_valid_coord(bounding_box[2], image_np.shape[0]) or not is_valid_coord(bounding_box[3], image_np.shape[1]):
+        if (not is_valid_coord(bounding_box[0], image_np.shape[0]) or
+                not is_valid_coord(bounding_box[1], image_np.shape[1]) or
+                not is_valid_coord(bounding_box[2], image_np.shape[0]) or
+                not is_valid_coord(bounding_box[3], image_np.shape[1])):
             continue
 
         cv2.rectangle(image_np,
@@ -384,7 +396,7 @@ def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_
     # Start tracking process.
     track_input_queue = Queue(maxsize=MAX_QUEUE_SIZE)
     track_output_queue = Queue(maxsize=MAX_QUEUE_SIZE)
-    track = Process(target=track_worker, args=(track_input_queue, track_output_queue, track_gpu_id,))
+    track = Process(target=track_worker, args=(track_input_queue, track_output_queue, track_gpu_id))
     track.start()
 
     # Annotate all new frames.
@@ -397,8 +409,10 @@ def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_
         if np.shape(frame) == ():
             continue
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        a, b = find_objects(frame_rgb, detect_worker_input_queues, detect_worker_output_queues, track_input_queue, track_output_queue, x_split, y_split)
-        output_q.put((a, b))
+        img, boxes = find_objects(frame_rgb, detect_worker_input_queues,
+                                  detect_worker_output_queues, track_input_queue,
+                                  track_output_queue, x_split, y_split)
+        output_q.put((img, boxes))
     fps.stop()
     track.join()
 
@@ -481,11 +495,18 @@ if __name__ == '__main__':
     PARSER.add_argument('-p', '--path', dest="video_path", type=str, default=None)
     PARSER.add_argument('-q-size', '--queue-size', dest='queue_size', type=int,
                         default=1, help='Size of the queue.')
-    PARSER.add_argument('-w', '--workers', dest="detect_workers", type=int, default=1, help='Number of detection workers')
-    PARSER.add_argument('-tracker-gpu-id', dest="track_gpu_id", type=int, default=0, help='GPU ID to use for tracker')
-    PARSER.add_argument('-x-split', dest="x_split", type=int, default=1, help='Number of splits along the x axis before running detection (1 split refers to the entire frame)')
-    PARSER.add_argument('-y-split', dest="y_split", type=int, default=1, help='Number of splits along the y axis before running detection (1 split refers to the entire frame)')
-    PARSER.add_argument('-dr', '-detect-rate', dest="detect_rate", type=int, default=1, help='Run detection every detect rate frames.')
-    PARSER.add_argument('-out', '-video-out', dest="video_out_fname", type=str, default=None, help='Name of video out file')
-    PARSER.add_argument('-show-frame', dest="show_frame", type=bool, default=False, help='Specifies whether the application should show the annotated frame')
+    PARSER.add_argument('-w', '--workers', dest="detect_workers", type=int, default=1,
+                        help='Number of detection workers')
+    PARSER.add_argument('-tracker-gpu-id', dest="track_gpu_id", type=int, default=0,
+                        help='GPU ID to use for tracker')
+    PARSER.add_argument('-x-split', dest="x_split", type=int, default=1,
+                        help='Number of frame columns to create before running detection')
+    PARSER.add_argument('-y-split', dest="y_split", type=int, default=1,
+                        help='Number of frame rows to create before running detection')
+    PARSER.add_argument('-dr', '-detect-rate', dest="detect_rate", type=int, default=1,
+                        help='Run detection every detect rate frames.')
+    PARSER.add_argument('-out', '-video-out', dest="video_out_fname", type=str, default=None,
+                        help='Name of video out file')
+    PARSER.add_argument('-show-frame', dest="show_frame", type=bool, default=False,
+                        help='Specifies whether the application should show the annotated frame')
     main(PARSER.parse_args())
