@@ -1,23 +1,30 @@
 # Object-Detector-App
 
-A real-time object recognition application using [Google's TensorFlow Object Detection API](https://github.com/tensorflow/models/tree/master/research/object_detection) and [OpenCV](http://opencv.org/).
+A real-time object recognition and tracking application using [Google's TensorFlow Object Detection API](https://github.com/tensorflow/models/tree/master/research/object_detection), [OpenCV](http://opencv.org/) and [Re3-tracker](https://github.com/danielgordon10/re3-tensorflow).
 
 ## Getting Started
 1. `conda env create -f environment.yml`
-2. `python object_detection_app.py` / `python object_detection_multithreading.py`
+2. `python3 object_detection_app.py`
     Optional arguments (default value):
     * Device index of the camera `--source=0`
     * Width of the frames in the video stream `--width=480`
     * Height of the frames in the video stream `--height=360`
-    * Number of workers `--num-workers=2`
-    * Size of the queue `--queue-size=5`
-    * Get video from HLS stream rather than webcam '--stream-input=http://somertmpserver.com/hls/live.m3u8'
-    * Send stream to livestreaming server '--stream-output=--stream=http://somertmpserver.com/hls/live.m3u8'
+    * Number of workers `--num-workers=1`
+    * Size of the queues `--queue-size=1`
+    * Get video from HLS stream rather than webcam `--stream-input=http://somertmpserver.com/hls/live.m3u8`
+    * Send stream to livestreaming server `--stream-output=--stream=http://somertmpserver.com/hls/live.m3u8`
+    * Get video from local file `--path=None`
+    * Set GPU ID for Re3-tracker `--tracker-gpu-id=0`
+    * Set number of columns to split frame into `--x-split=1`
+    * Set number of rows to split frame into `--y-split=1`
+    * Detect new objects every X frames `--detect-rate=1`
+    * Save video annotated with bounding boxes `--video-out=None`
+    * Show annotated frames in real time `--show-frame`
 
-## Tests
-```
-pytest -vs utils/
-```
+## Benchmarking
+1. Download test input and save in root directory.
+2. Update globals in `speed.py`, `speed_sampling_rate.py`, and `accuracy.py` to point to test data.
+3. Run `python3 <benchmark>.py` and open `<benchmark>_out.csv` for results.
 
 ## Requirements
 - [Anaconda / Python 3.5](https://www.continuum.io/downloads)
@@ -29,6 +36,6 @@ pytest -vs utils/
 - Moving the `.read()` part of the video stream in a multiple child processes did not work. However, it was possible to move it to a separate thread.
 
 ## Copyright
-
 See [LICENSE](LICENSE) for details.
-Copyright (c) 2017 [Dat Tran](http://www.dat-tran.com/).
+
+Original work inspired by [Dat Tran](http://www.dat-tran.com/).

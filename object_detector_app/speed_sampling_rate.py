@@ -26,7 +26,7 @@ Y_SPLIT = 1
 TRACK_GPU_ID = 0
 
 # Path to write results CSV.
-RESULTS_CSV_PATH = "speed_sr_out.csv"
+RESULTS_CSV_PATH = "speed_sampling_rate_out.csv"
 
 
 
