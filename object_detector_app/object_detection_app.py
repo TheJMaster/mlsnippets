@@ -34,9 +34,6 @@ COLORS = []  # Colors for the tracked bounding box.
 UNDETECTED_THRESHOLD = 20 # Number of frames to allow for undetected.
 EQUALITY_THRESHOLD = 20 # Equality threshold for distance between bounding box edges.
 
-DETECT_RATE = 1  # How frequently to run detection (ever DETECT_RATE frames)
-FRAME_NUM = -1  # Current frame number (starts at 0)
-
 # If specified, output video results.
 OUTPUT_FRAME_RATE = 30
 OUTPUT_DIMS = (720, 480)
@@ -148,8 +145,8 @@ def detect_worker(input_queue, output_queue, gpu_id):
             scores = np.squeeze(scores)
 
             # Filter for a particular class.
-            # Note: classes == 3 (car) or classes == 6 (bus)
-            indicies = np.argwhere(classes == 3 or classes == 6)
+            # Note: classes == 3 or classes == 6 (bus)
+            indicies = np.argwhere(classes == 3)
             boxes = np.squeeze(boxes[indicies])
             scores = np.squeeze(scores[indicies])
 
@@ -239,14 +236,14 @@ def is_valid_coord(coord, max_coord):
 
 
 def find_objects(image_np, detect_input_queues, detect_output_queues, track_input_queue,
-                 track_output_queue, x_split, y_split):
+                 track_output_queue, x_split, y_split, tracker_only):
     # pylint: disable-msg=too-many-locals
     """Run bus detection using on image, tracking existing buses using input/output queues.
        Returns annotated image and detected box list through output queue. """
     global NEXT_BOX_ID  # pylint: disable-msg=global-statement
 
     # Check if we can just run the tracker on this frame.
-    if FRAME_NUM % DETECT_RATE != 0:
+    if tracker_only:
         track_input_queue.put((image_np, TRACKED_BOX_IDS, None))
         tracked_boxes = track_output_queue.get()
 
@@ -382,7 +379,6 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
 
 def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_split, detect_rate):
     """Detect and track buses from input and save image annotated with bounding boxes to output."""
-    global DETECT_RATE, FRAME_NUM
 
     # Start detection processes.
     detect_worker_input_queues = [Queue(maxsize=MAX_QUEUE_SIZE)]*num_detect_workers
@@ -400,18 +396,19 @@ def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_
     track.start()
 
     # Annotate all new frames.
-    DETECT_RATE = detect_rate
     fps = FPS().start()
+    frame_num = -1
     while True:
         fps.update()
         frame = input_q.get()
-        FRAME_NUM = FRAME_NUM + 1
+        frame_num += 1
         if np.shape(frame) == ():
             continue
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        tracker_only = (frame_num % detect_rate) != 0
         img, boxes = find_objects(frame_rgb, detect_worker_input_queues,
                                   detect_worker_output_queues, track_input_queue,
-                                  track_output_queue, x_split, y_split)
+                                  track_output_queue, x_split, y_split, tracker_only)
         output_q.put((img, boxes))
     fps.stop()
     track.join()
