@@ -128,14 +128,13 @@ def is_valid_coord(coord, max_coord):
 
 
 def detect_worker(input_queue, output_queue, gpu_id):
-    # pylint: disable-msg=too-many-locals
     """Runs object detection on the provided numpy image using a frozen detection model."""
-    import tensorflow as tf  # pylint: disable-msg=import-outside-toplevel
+    import tensorflow as tf
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
 
     # Setup tesnorflow session
     detection_graph = tf.Graph()
-    with detection_graph.as_default():  # pylint: disable-msg=not-context-manager
+    with detection_graph.as_default():
         od_graph_def = tf.GraphDef()
         with tf.gfile.GFile(PATH_TO_CKPT, 'rb') as fid:
             serialized_graph = fid.read()
@@ -212,7 +211,7 @@ def detect_worker(input_queue, output_queue, gpu_id):
 def track_worker(input_queue, output_queue, gpu_id):
     """Runs Re3 tracker on images from input queue, passing bounding boxes to output queue."""
     sys.path.insert(1, '/home/jtjohn24/mlsnippets/object_detector_app/re3-tensorflow')
-    from tracker import re3_tracker  # pylint: disable-msg=import-outside-toplevel, import-error
+    from tracker import re3_tracker
 
     tracker = re3_tracker.Re3Tracker(gpu_id)
     while True:
@@ -266,6 +265,8 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     # Split image along x axis the correct number of times.
     x_sub_imgs = np.split(image_np, x_split)
     y_sub_imgs = np.array([np.hsplit(img, y_split) for img in x_sub_imgs])
+
+    # reshape to [num sub imgs, height, width, 3] to match model input shape.
     y_sub_imgs = y_sub_imgs.reshape(x_split*y_split, int(image_np.shape[0]/x_split),
                                     int(image_np.shape[1]/y_split), 3)
     y_sub_imgs = list(y_sub_imgs)
