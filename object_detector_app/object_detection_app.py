@@ -16,10 +16,13 @@ from utils.app_utils import FPS, LocalVideoStream, HLSVideoStream
 CWD_PATH = os.getcwd()
 
 # Path to frozen detection graph. This is the actual model that is used for the object detection.
-PATH_TO_CKPT = os.path.join(CWD_PATH, 'models/ssd_mobilenet/v1_coco/frozen_inference_graph.pb')
+PATH_TO_CKPT = os.path.join(CWD_PATH, 'models/yolov4/yolov4_320_norm.pb')
 
-# Dimensions required/encourage by Tensorflow Object Detection API model.
-DETECT_IMG_DIMS = (300, 300)
+# Path to Re3 tracker library. This is the model used for tracking objects after detection.
+PATH_TO_RE3 = os.path.join(CWD_PATH, 're3-tensorflow')
+
+# Dimensions required/encourage by the YOLOv4 model.
+DETECT_IMG_DIMS = (320, 320)
 
 # Max queue size for detection and tracking input/output threads.
 MAX_QUEUE_SIZE = 3
@@ -27,9 +30,7 @@ MAX_QUEUE_SIZE = 3
 UNDETECTED_THRESHOLD = 30 # Number of frames to allow for undetected.
 EQUALITY_THRESHOLD = 10 # Equality threshold for distance between bounding box edges.
 
-# If specified, output video results.
-OUTPUT_FRAME_RATE = 30
-OUTPUT_DIMS = (720, 480)
+OUTPUT_FRAME_RATE = 30  # FPS of output video.
 
 
 # UTILITY FUNCTIONS
@@ -124,6 +125,93 @@ def is_valid_coord(coord, max_coord):
     return coord >= 0 and coord <= max_coord
 
 
+def compute_iou(box, boxes, box_area, boxes_area):
+    # this is the iou of the box against all other boxes
+    assert boxes.shape[0] == boxes_area.shape[0]
+    # get all the origin-ys
+    # push up all the lower origin-xs, while keeping the higher origin-xs
+    ys1 = np.maximum(box[0], boxes[:, 0])
+    # get all the origin-xs
+    # push right all the lower origin-xs, while keeping higher origin-xs
+    xs1 = np.maximum(box[1], boxes[:, 1])
+    # get all the target-ys
+    # pull down all the higher target-ys, while keeping lower origin-ys
+    ys2 = np.minimum(box[2], boxes[:, 2])
+    # get all the target-xs
+    # pull left all the higher target-xs, while keeping lower target-xs
+    xs2 = np.minimum(box[3], boxes[:, 3])
+    # each intersection area is calculated by the
+    # pulled target-x minus the pushed origin-x
+    # multiplying
+    # pulled target-y minus the pushed origin-y
+    # we ignore areas where the intersection side would be negative
+    # this is done by using maxing the side length by 0
+    intersections = np.maximum(ys2 - ys1, 0) * np.maximum(xs2 - xs1, 0)
+    # each union is then the box area
+    # added to each other box area minusing their intersection calculated above
+    unions = box_area + boxes_area - intersections
+    # element wise division
+    # if the intersection is 0, then their ratio is 0
+    ious = intersections / unions
+    return ious
+
+
+def non_max_suppression(boxes, scores, threshold):
+    assert boxes.shape[0] == scores.shape[0]
+
+    # bottom-left origin
+    ys1 = boxes[:, 0]
+    xs1 = boxes[:, 1]
+    # top-right s
+    ys2 = boxes[:, 2]
+    xs2 = boxes[:, 3]
+    # box coordinate ranges are inclusive-inclusive
+    areas = (ys2 - ys1) * (xs2 - xs1)
+    scores_indexes = scores.argsort().tolist()
+    boxes_keep_index = []
+
+    while len(scores_indexes):
+        index = scores_indexes.pop()
+        boxes_keep_index.append(index)
+        if not len(scores_indexes):
+            break
+        ious = compute_iou(boxes[index], boxes[scores_indexes], areas[index],
+                           areas[scores_indexes])
+        filtered_indexes = set((ious > threshold).nonzero()[0])
+        # if there are no more scores_index
+        # then we should pop it
+        scores_indexes = [
+            v for (i, v) in enumerate(scores_indexes)
+            if i not in filtered_indexes
+        ]
+    return np.array(boxes_keep_index)
+
+
+def process_single_output(boxes, scores, score_threshold=0.4, iou_threshold=0.5, num_classes=80):
+    mask = scores >= 0.4
+
+    boxes_ = []
+    scores_ = []
+    classes_ = []
+
+    # normalize boxes to [0-1] range
+    boxes /= float(320) + 0.5
+
+    for c in range(num_classes):
+        class_boxes = boxes[mask[:,c]]
+        class_box_scores = scores[:, c][mask[:,c]]
+        nms_index = non_max_suppression(class_boxes, class_box_scores, iou_threshold)
+        if len(nms_index) > 0:
+            class_boxes = class_boxes[nms_index]
+            class_box_scores = class_box_scores[nms_index]
+            classes = np.ones_like(class_box_scores, dtype=np.int32) * c
+            boxes_.extend(class_boxes)
+            scores_.extend(class_box_scores)
+            classes_.extend(classes)
+
+    return boxes_, scores_, classes_
+
+
 # WORKER FUNCTIONS
 
 
@@ -155,50 +243,31 @@ def detect_worker(input_queue, output_queue, gpu_id):
             batch = np.concatenate(tuple(images_expanded))
 
         # Grab the tensor to populate with the image batch.
-        image_tensor = detection_graph.get_tensor_by_name('image_tensor:0')
+        input_tensor = detection_graph.get_tensor_by_name('inputs:0')
 
         # Each box represents a part of the image where a particular object was detected.
-        boxes = detection_graph.get_tensor_by_name('detection_boxes:0')
+        boxes = detection_graph.get_tensor_by_name('boxes:0')
 
         # Each score represent how level of confidence for each class of the objects.
-        scores = detection_graph.get_tensor_by_name('detection_scores:0')
-        classes = detection_graph.get_tensor_by_name('detection_classes:0')
-        num_detections = detection_graph.get_tensor_by_name('num_detections:0')
+        scores = detection_graph.get_tensor_by_name('scores:0')
 
         # Run initial detection.
-        (boxes, scores, classes, num_detections) = sess.run(
-            [boxes, scores, classes, num_detections],
-            feed_dict={image_tensor: batch})
+        boxes, scores = sess.run([boxes, scores], feed_dict={input_tensor: batch})
 
         batch_results = []
-        for (image, boxes, scores, classes) in zip(batch, boxes, scores, classes):
-            # Flatten all results for filtering.
-            boxes = np.squeeze(boxes)
-            classes = np.squeeze(classes)
-            scores = np.squeeze(scores)
-
-            # Filter for a particular class.
-            # Note: classes == 3 or classes == 6 (bus)
-            indicies = np.argwhere(classes == 3)
-            boxes = np.squeeze(boxes[indicies])
-            scores = np.squeeze(scores[indicies])
-
-            # Remove all instances of classes with a low confidence score (< 0.5).
-            indicies = np.argwhere(scores > 0.5)
-            boxes = np.squeeze(boxes[indicies])
-
-            # Set array to empty if ndim == 0
-            if boxes.ndim == 0:
-                boxes = np.array([])
-
-            # Convert all of the boxes to match style from RE-3 tracker.
-            height = image.shape[0]
-            width = image.shape[1]
+        for (image, boxes, scores) in zip(batch, boxes, scores):
+            boxes_, scores_, classes_ = process_single_output(boxes, scores)
+            h, w = image.shape[:2]
             detected_boxes = []
-            for box in list(boxes):
-                if isinstance(box, np.ndarray):
-                    detected_boxes.append([box[1]*width, box[0]*height,
-                                           box[3]*width, box[2]*height])
+            for box, score, class_idx in zip(boxes_, scores_, classes_):
+                top, left, bottom, right = box
+
+                top = int(top * h)
+                left = int(left * w)
+                bottom = int(bottom * h)
+                right = int(right * w)
+
+                detected_boxes.append([left, top, right, bottom])
             batch_results.append(np.array(detected_boxes))
 
         # Return bounding boxes for batch via output queue.
@@ -210,7 +279,7 @@ def detect_worker(input_queue, output_queue, gpu_id):
 
 def track_worker(input_queue, output_queue, gpu_id):
     """Runs Re3 tracker on images from input queue, passing bounding boxes to output queue."""
-    sys.path.insert(1, '/home/jtjohn24/mlsnippets/object_detector_app/re3-tensorflow')
+    sys.path.insert(1, PATH_TO_RE3)
     from tracker import re3_tracker
 
     tracker = re3_tracker.Re3Tracker(gpu_id)
@@ -228,13 +297,15 @@ def track_worker(input_queue, output_queue, gpu_id):
         if tracked_boxes.ndim == 0 or tracked_boxes.size == 0:
             output_queue.put([])
         elif tracked_boxes.ndim == 1:
+            # If only a single box is detected, Re3 returns only that box. Convert to two dim
+            # result to match.
             output_queue.put([tracked_boxes])
         else:
             output_queue.put(tracked_boxes)
 
 
 def find_objects(image_np, detect_input_queues, detect_output_queues, track_input_queue,
-                 track_output_queue, x_split, y_split, tracked_box_ids, undetected_counts,
+                 track_output_queue, rows, cols, tracked_box_ids, undetected_counts,
                  box_colors, next_box_id, tracker_only):
     """Run bus detection using on image, tracking existing buses using input/output queues.
        Returns annotated image and detected box list through output queue. """
@@ -253,22 +324,22 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
         return image_np, []
 
     # Check that splitting frame with current parameters is safe.
-    if image_np.shape[0] % x_split != 0:
+    if image_np.shape[0] % rows != 0:
         print("ERROR: {} image width not divisible by x-split {}".format(image_np.shape[0],
-                                                                         x_split))
+                                                                         rows))
         return image_np, []
-    if image_np.shape[1] % y_split != 0:
+    if image_np.shape[1] % cols != 0:
         print("ERROR: {} image width not divisible by y-split {}".format(image_np.shape[1],
-                                                                         y_split))
+                                                                         cols))
         return image_np, []
 
     # Split image along x axis the correct number of times.
-    x_sub_imgs = np.split(image_np, x_split)
-    y_sub_imgs = np.array([np.hsplit(img, y_split) for img in x_sub_imgs])
+    x_sub_imgs = np.split(image_np, rows)
+    y_sub_imgs = np.array([np.hsplit(img, cols) for img in x_sub_imgs])
 
     # reshape to [num sub imgs, height, width, 3] to match model input shape.
-    y_sub_imgs = y_sub_imgs.reshape(x_split*y_split, int(image_np.shape[0]/x_split),
-                                    int(image_np.shape[1]/y_split), 3)
+    y_sub_imgs = y_sub_imgs.reshape(rows*cols, int(image_np.shape[0]/rows),
+                                    int(image_np.shape[1]/cols), 3)
     y_sub_imgs = list(y_sub_imgs)
     all_imgs = y_sub_imgs + [image_np]
 
@@ -297,8 +368,8 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     y_shift = all_imgs[0].shape[0]
     for boxes_idx in range(len(detect_result_boxes)-1):  # boxes_idx corresponds to a split
         for box_idx in range(len(detect_result_boxes[boxes_idx])):  # box_idx to a box in a split
-            x_delta = (boxes_idx % y_split) * x_shift
-            y_delta = ((int(boxes_idx / x_split)) % y_split) * y_shift
+            x_delta = (boxes_idx % cols) * x_shift
+            y_delta = (int(boxes_idx / cols)) * y_shift
             detect_result_boxes[boxes_idx][box_idx][0] += x_delta
             detect_result_boxes[boxes_idx][box_idx][1] += y_delta
             detect_result_boxes[boxes_idx][box_idx][2] += x_delta
@@ -374,7 +445,7 @@ def find_objects(image_np, detect_input_queues, detect_output_queues, track_inpu
     return (image_np, detected_boxes, next_box_id)
 
 
-def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_split, detect_rate):
+def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, rows, cols, detect_rate):
     """Detect and track buses from input and save image annotated with bounding boxes to output."""
 
     # Start detection processes.
@@ -410,7 +481,7 @@ def draw_worker(input_q, output_q, num_detect_workers, track_gpu_id, x_split, y_
         img, boxes, next_box_id = find_objects(frame_rgb,
                                                detect_worker_input_queues, detect_worker_output_queues,
                                                track_input_queue, track_output_queue,
-                                               x_split, y_split,
+                                               rows, cols,
                                                tracked_box_ids,
                                                undetected_counts,
                                                box_colors,
@@ -431,7 +502,7 @@ def main(args):
     input_q = Queue(maxsize=args.queue_size)
     output_q = Queue(maxsize=args.queue_size)
     draw_proc = Process(target=draw_worker, args=(input_q, output_q, args.detect_workers,
-                                                  args.track_gpu_id, args.x_split, args.y_split,
+                                                  args.track_gpu_id, args.rows, args.cols,
                                                   args.detect_rate,))
     draw_proc.start()
 
@@ -454,7 +525,7 @@ def main(args):
         video_out = cv2.VideoWriter(args.video_out_fname,
                                     cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'),
                                     OUTPUT_FRAME_RATE,
-                                    OUTPUT_DIMS)
+                                    (video_capture.WIDTH, video_capture.HEIGHT))
 
     fps = FPS().start()
     while True:  # fps._numFrames < 120
@@ -506,10 +577,10 @@ if __name__ == '__main__':
                         help='Number of detection workers')
     PARSER.add_argument('-tracker-gpu-id', dest="track_gpu_id", type=int, default=0,
                         help='GPU ID to use for tracker')
-    PARSER.add_argument('-x-split', dest="x_split", type=int, default=1,
-                        help='Number of frame columns to create before running detection')
-    PARSER.add_argument('-y-split', dest="y_split", type=int, default=1,
+    PARSER.add_argument('-rows', dest="rows", type=int, default=1,
                         help='Number of frame rows to create before running detection')
+    PARSER.add_argument('-cols', dest="cols", type=int, default=1,
+                        help='Number of frame columns to create before running detection')
     PARSER.add_argument('-dr', '-detect-rate', dest="detect_rate", type=int, default=1,
                         help='Run detection every detect rate frames.')
     PARSER.add_argument('-out', '-video-out', dest="video_out_fname", type=str, default=None,

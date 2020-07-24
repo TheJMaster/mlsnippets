@@ -97,6 +97,9 @@ test_input/
 # Output videos
 *.avi
 
+# YOLOv4 models
+/models/yolov4/*.pb
+
 # Output files from benchmarking and testing
 *.csv
 /img_out/

@@ -4,6 +4,7 @@ A real-time object recognition and tracking application using [Google's TensorFl
 
 ## Getting Started
 1. `conda env create -f environment.yml`
+2.  run `./models/yolov4/download_models.sh` to download YOLOv4 models.
 2. `python3 object_detection_app.py`
     Optional arguments (default value):
     * Device index of the camera `--source=0`
@@ -15,8 +16,8 @@ A real-time object recognition and tracking application using [Google's TensorFl
     * Send stream to livestreaming server `--stream-output=--stream=http://somertmpserver.com/hls/live.m3u8`
     * Get video from local file `--path=None`
     * Set GPU ID for Re3-tracker `--tracker-gpu-id=0`
-    * Set number of columns to split frame into `--x-split=1`
-    * Set number of rows to split frame into `--y-split=1`
+    * Set number of rows to split frame into `--rows=1`
+    * Set number of cols to split frame into `--cols=1`
     * Detect new objects every X frames `--detect-rate=1`
     * Save video annotated with bounding boxes `--video-out=None`
     * Show annotated frames in real time `--show-frame`
