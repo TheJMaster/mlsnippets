@@ -21,6 +21,10 @@ PATH_TO_CKPT = os.path.join(CWD_PATH, 'models/yolov4/yolov4_320_norm.pb')
 # Path to Re3 tracker library. This is the model used for tracking objects after detection.
 PATH_TO_RE3 = os.path.join(CWD_PATH, 're3-tensorflow')
 
+# Class name indicies corresponding to classes Re3 should track.
+# 2 -> car, 3 -> motorcycle, 5 -> bus, 7 -> truck
+TRACK_CLASSES = [2, 3, 5, 7]
+
 # Dimensions required/encourage by the YOLOv4 model.
 DETECT_IMG_DIMS = (320, 320)
 
@@ -267,7 +271,8 @@ def detect_worker(input_queue, output_queue, gpu_id):
                 bottom = int(bottom * h)
                 right = int(right * w)
 
-                detected_boxes.append([left, top, right, bottom])
+                if class_idx in TRACK_CLASSES:
+                    detected_boxes.append([left, top, right, bottom])
             batch_results.append(np.array(detected_boxes))
 
         # Return bounding boxes for batch via output queue.
